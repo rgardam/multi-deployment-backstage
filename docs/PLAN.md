@@ -532,10 +532,11 @@ specific to local plugins:
   `resolvePackagePath` finds them and the plugin migrates its database on
   start.
 - The pruned lockfile keeps local packages as workspace entries with their
-  production dependencies. A plugin's npm dependencies (`knex` and `zod` for
-  noticeboard, `@backstage/plugin-catalog-node` for scorecards) are installed
-  in the cached dependency layer of the images that host the plugin, and of no
-  other image.
+  production dependencies, so a plugin's npm dependencies are installed in
+  the cached dependency layer of the images that host it. Only those images'
+  lockfiles list the plugin: adding or bumping one of its dependencies
+  reruns their dependency install and leaves every other image's cache
+  alone.
 
 At runtime a local plugin is wired like any other split plugin (3.3).
 Scorecards shows the whole path: `backend-scorecards` reads the catalog with

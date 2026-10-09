@@ -122,7 +122,8 @@ independent builds as plugins from npm:
 - **Backend plugins** are dependencies of the backend that hosts them, added
   with `backend.add(import(...))`. The backend's bundle carries their built
   code (and assets such as migrations), and its pruned lockfile carries their
-  npm dependencies, so they land in that image only.
+  npm dependencies, so a dependency change only invalidates that image's
+  cache.
 - **Builds stay independent**: each bundle task is fingerprinted on its
   package plus the local packages it pulls in (`scripts/workspace-deps.mjs`).
   Editing the noticeboard backend rebuilds `backend-core` only; editing
