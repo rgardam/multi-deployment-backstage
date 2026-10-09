@@ -1,0 +1,20 @@
+{
+  "name": "@internal/catalog-sharding",
+  "version": "0.0.0",
+  "description": "Catalog shard topology and query-to-shard routing rules, shared by the catalog router and the catalog backend",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "backstage": {
+    "role": "common-library",
+    "inline": true
+  },
+  "scripts": {
+    "lint": "backstage-cli package lint",
+    "test": "backstage-cli package test",
+    "clean": "backstage-cli package clean"
+  },
+  "devDependencies": {
+    "@backstage/cli": "^0.36.6"
+  }
+}

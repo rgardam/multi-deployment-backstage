@@ -1,0 +1,12 @@
+# Each Dockerfile has its own <Dockerfile>.dockerignore next to it that only
+# lets in what that image copies. This root file is the fallback for builds
+# that use an older builder without per-Dockerfile ignore support.
+.git
+.task
+.yarn/cache
+.yarn/install-state.gz
+node_modules
+packages/*/node_modules
+packages/*/src
+plugins
+*.local.yaml

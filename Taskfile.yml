@@ -1,0 +1,241 @@
+# Orchestrates the split Backstage POC: host-side bundles, one image per
+# service, docker compose for running it all.
+#
+#   task build                 build every image (in parallel)
+#   task deploy:backend-search rebuild one image and roll only that service
+#   task up / task smoke       run the stack and check routing and sharding
+#   task push REGISTRY=...     push every image (or push:<service>)
+#
+# https://taskfile.dev
+version: '3'
+
+vars:
+  # Images are named <IMAGE_PREFIX>/<service>:<TAG>
+  REGISTRY: '{{.REGISTRY | default ""}}'
+  IMAGE_NAMESPACE: '{{.IMAGE_NAMESPACE | default "backstage-poc"}}'
+  IMAGE_PREFIX: '{{if .REGISTRY}}{{.REGISTRY}}/{{end}}{{.IMAGE_NAMESPACE}}'
+  TAG: '{{.TAG | default "dev"}}'
+  NODE_VERSION: '{{.NODE_VERSION | default "24"}}'
+  # CA bundle for TLS-intercepting proxies, handed to builds as a secret
+  EXTRA_CA_CERT: '{{.EXTRA_CA_CERT | default ""}}'
+  # Extra flags for docker build, e.g. registry cache:
+  #   --cache-from type=registry,ref=... --cache-to type=registry,ref=...,mode=max
+  DOCKER_BUILD_FLAGS: '{{.DOCKER_BUILD_FLAGS | default ""}}'
+  BASE_URL: '{{.APP_BASE_URL | default "http://localhost:8080"}}'
+
+env:
+  IMAGE_PREFIX: '{{.IMAGE_PREFIX}}'
+  TAG: '{{.TAG}}'
+  APP_BASE_URL: '{{.BASE_URL}}'
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  # ------------------------------------------------------------- toolchain
+
+  install:
+    desc: Install JS dependencies (immutable lockfile)
+    run: once
+    sources:
+      - package.json
+      - yarn.lock
+      - .yarnrc.yml
+      - packages/*/package.json
+    generates:
+      - node_modules/.yarn-state.yml
+    cmds:
+      - yarn install --immutable
+
+  check:
+    desc: Type-check and run unit tests (shard rules, catalog router, shard guard)
+    deps: [install]
+    env:
+      CI: 'true'
+    cmds:
+      - yarn tsc
+      - yarn backstage-cli repo test
+
+  # --------------------------------------------------------------- bundles
+  # Bundles are built on the host, where node_modules and build caches are
+  # already warm. Task skips a bundle whose sources have not changed.
+
+  bundle:app:
+    desc: Build the frontend bundle (packages/app/dist)
+    deps: [install]
+    sources:
+      - packages/app/src/**/*
+      - packages/app/public/**/*
+      - packages/app/package.json
+      - app-config.yaml
+      - yarn.lock
+    generates:
+      - packages/app/dist/index.html
+    cmds:
+      - yarn workspace app build
+
+  bundle:*:
+    desc: 'Build one backend or the catalog router on the host, e.g. task bundle:backend-search'
+    deps: [install]
+    vars:
+      PKG: '{{index .MATCH 0}}'
+    label: 'bundle:{{.PKG}}'
+    sources:
+      - packages/{{.PKG}}/src/**/*
+      - packages/{{.PKG}}/package.json
+      - packages/catalog-sharding/src/**/*
+      - package.json
+      - yarn.lock
+      - scripts/prune-lockfile.mjs
+    generates:
+      - packages/{{.PKG}}/dist/**/*
+    cmds:
+      - yarn workspace {{.PKG}} build
+      # Backends: lockfile pruned to this backend, for the image's cached deps layer
+      - test ! -f packages/{{.PKG}}/dist/skeleton.tar.gz || node scripts/prune-lockfile.mjs {{.PKG}}
+
+  # ---------------------------------------------------------------- images
+  # One Dockerfile per service. Each image only copies its own bundle, so a
+  # code change rebuilds a few MB on top of a cached dependency layer.
+
+  image:gateway:
+    desc: Build the nginx gateway image
+    cmds:
+      - task: _docker-build
+        vars: { SVC: gateway, DOCKERFILE: gateway/Dockerfile }
+
+  image:*:
+    desc: 'Build one service image, e.g. task image:backend-catalog'
+    vars:
+      SVC: '{{index .MATCH 0}}'
+    label: 'image:{{.SVC}}'
+    deps:
+      - task: 'bundle:{{.SVC}}'
+    cmds:
+      - task: _docker-build
+        vars: { SVC: '{{.SVC}}', DOCKERFILE: 'packages/{{.SVC}}/Dockerfile' }
+
+  _docker-build:
+    internal: true
+    requires:
+      vars: [SVC, DOCKERFILE]
+    cmds:
+      - >-
+        docker build
+        --file {{.DOCKERFILE}}
+        --tag {{.IMAGE_PREFIX}}/{{.SVC}}:{{.TAG}}
+        --build-arg NODE_VERSION={{.NODE_VERSION}}
+        {{if .EXTRA_CA_CERT}}--secret id=extra_ca,src={{.EXTRA_CA_CERT}}{{end}}
+        {{.DOCKER_BUILD_FLAGS}}
+        .
+
+  build:
+    desc: Build every image in parallel
+    deps:
+      - image:backend-core
+      - image:backend-catalog
+      - image:backend-scaffolder
+      - image:backend-search
+      - image:backend-techdocs
+      - image:catalog-router
+      - image:app
+      - image:gateway
+
+  push:*:
+    desc: 'Push one image, e.g. task push:backend-catalog REGISTRY=ghcr.io/acme'
+    vars:
+      SVC: '{{index .MATCH 0}}'
+    label: 'push:{{.SVC}}'
+    preconditions:
+      - sh: test -n "{{.REGISTRY}}"
+        msg: Set REGISTRY, e.g. `task push REGISTRY=localhost:5000` (see `task registry`)
+    cmds:
+      - docker push {{.IMAGE_PREFIX}}/{{.SVC}}:{{.TAG}}
+
+  push:
+    desc: Push every image
+    deps:
+      - push:backend-core
+      - push:backend-catalog
+      - push:backend-scaffolder
+      - push:backend-search
+      - push:backend-techdocs
+      - push:catalog-router
+      - push:app
+      - push:gateway
+
+  release:*:
+    desc: 'Build and push one service, e.g. task release:backend-search REGISTRY=...'
+    vars:
+      SVC: '{{index .MATCH 0}}'
+    cmds:
+      - task: 'image:{{.SVC}}'
+      - task: 'push:{{.SVC}}'
+
+  registry:
+    desc: Run a throwaway registry on localhost:5000 to try pushing
+    status:
+      - docker inspect backstage-poc-registry >/dev/null 2>&1
+    cmds:
+      - docker run -d --restart unless-stopped -p 5000:5000 --name backstage-poc-registry registry:2
+
+  # ------------------------------------------------------------------- run
+
+  up:
+    desc: Start the stack and wait until every service is healthy
+    cmds:
+      - docker compose up --detach --wait --remove-orphans
+      - echo "Backstage is up at {{.BASE_URL}}"
+
+  down:
+    desc: Stop the stack (keeps the database volume)
+    cmds:
+      - docker compose down --remove-orphans
+
+  reset:
+    desc: Stop the stack and delete its database
+    cmds:
+      - docker compose down --remove-orphans --volumes
+
+  ps:
+    desc: Show services and replicas
+    cmds:
+      - docker compose ps --format 'table {{"{{"}}.Name{{"}}"}}\t{{"{{"}}.Image{{"}}"}}\t{{"{{"}}.Status{{"}}"}}'
+
+  logs:
+    desc: 'Follow logs, e.g. task logs -- catalog-router gateway'
+    cmds:
+      - docker compose logs --follow --tail 100 {{.CLI_ARGS}}
+
+  deploy:*:
+    desc: 'Rebuild one image and roll only its service(s), e.g. task deploy:backend-search'
+    vars:
+      SVC: '{{index .MATCH 0}}'
+      # The catalog image runs as three shard deployments
+      SERVICES: '{{if eq .SVC "backend-catalog"}}catalog-org catalog-payments catalog-default{{else}}{{.SVC}}{{end}}'
+    label: 'deploy:{{.SVC}}'
+    cmds:
+      - task: 'image:{{.SVC}}'
+      - docker compose up --detach --wait --no-deps {{.SERVICES}}
+
+  scale:
+    desc: 'Scale one service, e.g. task scale SERVICE=catalog-default REPLICAS=3'
+    requires:
+      vars: [SERVICE, REPLICAS]
+    cmds:
+      - docker compose up --detach --wait --no-deps --no-recreate --scale {{.SERVICE}}={{.REPLICAS}} {{.SERVICE}}
+      - docker compose ps {{.SERVICE}}
+
+  smoke:
+    desc: Check routing, catalog sharding, auth, search and the frontend on the running stack
+    cmds:
+      - node scripts/smoke.mjs {{.BASE_URL}}
+
+  e2e:
+    desc: Browser tests against the running stack (needs `npx playwright install chromium` once)
+    env:
+      PLAYWRIGHT_URL: '{{.BASE_URL}}'
+    cmds:
+      - yarn playwright test {{.CLI_ARGS}}

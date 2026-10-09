@@ -1,0 +1,548 @@
+# Split Backstage deployment: plan, design and findings
+
+This document explains what the proof of concept in this repository does, why
+it is built the way it is, what was measured, what does not work (yet), and
+how to take it to production. The [README](../README.md) covers how to run it.
+
+## 1. Summary
+
+The goal was a Backstage deployment where each backend can be built, pushed
+and scaled on its own, behind a single frontend container and an nginx entry
+point, with fast builds as the main constraint. A second question was whether
+the software catalog can be split across several catalog instances, with
+requests routed to the right instance(s) from their parameters.
+
+Both work, and both run end to end in this repository (Backstage 1.55):
+
+- **Eight images, eight Dockerfiles, built and pushed independently**: five
+  backends (`core`, `catalog`, `scaffolder`, `search`, `techdocs`), a
+  catalog router, the frontend (static files in nginx) and the gateway (nginx).
+  Orchestrated with Task and Docker Compose.
+- **Builds stay fast because each image only depends on its own inputs.** A
+  code change rebuilds a backend image in about 3 s on top of a cached
+  dependency layer. That layer is keyed on a lockfile pruned to the backend's
+  own production dependencies, so bumping a dependency of one backend reruns
+  the (roughly 40 s) dependency install for that backend only.
+- **Each deployment scales on its own** and traffic follows new replicas,
+  both at the gateway and between the catalog router and the shards.
+- **The catalog is split into three shards by kind and namespace.** A catalog
+  router reads each request (filters, entity refs, paths, cursors), sends it
+  only to the shards that can hold matching entities, and merges results when
+  more than one can. The catalog UI, search, TechDocs, the scaffolder and the
+  permission framework all work unchanged on top of it.
+
+The catalog part answers "can we route by query?" with *yes, but not in nginx
+alone*. nginx handles explicit selection (`?shard=payments`). Routing on the
+catalog's own query language, and answering queries that span shards, needs a
+component that understands that language; that is the catalog router. Some
+things do not cross shard boundaries, most visibly reverse relations; see
+[section 6.8](#68-what-does-not-cross-shards).
+
+## 2. Goals and constraints
+
+| Goal | How it is met |
+| --- | --- |
+| Independently build multiple backend containers | One package and one Dockerfile per backend; images only copy their own bundle and dependency manifest |
+| A single frontend container | `packages/app`: the static bundle served by nginx, configured at container start |
+| nginx as the routing entry point | `gateway/`: all browser *and* service-to-service traffic goes through it |
+| Fast, independent builds | Host-side bundles, per-backend pruned dependency layers, tiny build contexts, Task fingerprints |
+| Scale backends independently | One Compose service (Kubernetes Deployment) per backend and per catalog shard; DNS-aware load balancing |
+| Query-based routing to split catalog instances | Gateway `?shard=` routing plus the catalog router's query-based pruning and fan-out |
+| Taskfile + Docker Compose orchestration | `Taskfile.yml`, `docker-compose.yml` |
+
+Non-goals for the POC: production authentication (it uses the guest
+provider), a real permission policy (allow-all), Kubernetes manifests, and a
+CI pipeline. Section 9 covers those.
+
+## 3. Architecture
+
+### 3.1 Services
+
+| Service | Image | Hosts | Scales with |
+| --- | --- | --- | --- |
+| `gateway` | nginx | Routing only | Connections; stateless |
+| `app` | nginx + static files | The frontend bundle | Rarely needs to; stateless |
+| `backend-core` | Node | auth, permission, events (bus), proxy, notifications, signals, user-settings, kubernetes, mcp-actions | Permission checks (every request to every plugin calls it) |
+| `catalog-router` | Node, no `node_modules` | `/api/catalog` routing and merging | Catalog request rate; stateless |
+| `catalog-org`, `catalog-payments`, `catalog-default` | `backend-catalog` | One catalog shard each | Read rate (replicas) and catalog size (shards) |
+| `backend-scaffolder` | Node | Software templates | Concurrent template runs |
+| `backend-search` | Node | Search API, Postgres engine, collators | Query rate |
+| `backend-techdocs` | Python + Node | TechDocs (serving and MkDocs generation) | Doc views and builds |
+| `postgres` | postgres | One database per plugin (and per shard) | (shared in the POC) |
+
+The split follows how the plugins behave under load: the catalog is read
+heavy and the biggest dataset, the scaffolder is bursty and CPU heavy,
+TechDocs needs a different runtime, and the small identity and platform
+plugins stay together in `core`.
+
+### 3.2 How the pieces find each other
+
+Every backend uses the same discovery config:
+
+```yaml
+discovery:
+  endpoints:
+    - target:
+        internal: ${INTERNAL_GATEWAY_URL}/api/{{pluginId}} # http://gateway:8080
+        external: ${BACKEND_BASE_URL}/api/{{pluginId}}
+      plugins: ['*']
+```
+
+So a backend calling another plugin (search reading the catalog, the catalog
+asking `permission`, `auth` looking up a user) goes through the gateway, which
+maps `/api/<plugin>` to the deployment that hosts it. Consequences:
+
+- **The gateway config is the only topology map.** Moving a plugin from
+  `core` to its own deployment is a new Dockerfile and one nginx `location`.
+- **Internal traffic is load balanced by nginx**, which re-resolves service
+  names every 5 s (`server ... resolve`, nginx 1.27.3+), so scaled replicas
+  get traffic immediately.
+- The browser uses the same URLs (`backend.baseUrl` is the gateway), so there
+  is no CORS and one TLS endpoint.
+
+Everything not routed elsewhere falls through to `core` (`location /api/`),
+which keeps the gateway config short.
+
+### 3.3 What has to work across deployments
+
+Splitting Backstage is mostly about the things a single process used to get
+for free:
+
+- **Service-to-service auth.** Plugins call each other with *plugin tokens*
+  signed by the caller. The receiver verifies them against the caller's JWKS,
+  which it fetches from `<caller base URL>/.backstage/auth/v1/jwks.json`
+  through discovery, i.e. through the gateway. This works across deployments
+  without shared secrets. (For the sharded catalog see 6.6.)
+- **User tokens** are issued by `auth` in `core` and verified everywhere
+  against its JWKS, also via the gateway.
+- **Permissions**: with the framework on, each catalog read makes the catalog
+  shard call `permission` in `core` on behalf of the user. The smoke test
+  exercises this path on every catalog request.
+- **Events**: in-process event delivery does not reach other deployments, so
+  `core` runs the events backend (a Postgres-backed event bus) and every
+  backend sets `events.useEventBus: always`. The default, `auto`, permanently
+  falls back to process-local events if its first subscription gets a 404,
+  which happened here whenever a backend started before `core`.
+- **Databases**: each plugin gets its own database on the shared server, and
+  each catalog shard sets its own `backend.database.prefix`, so the shards are
+  fully independent catalogs.
+
+### 3.4 Configuration layering
+
+- `app-config.yaml` and `app-config.production.yaml` are baked into every
+  backend image; environment-specific values come from environment variables.
+- Per-deployment config is mounted into `/app/config.d/` and applied in name
+  order by the shared entrypoint (`docker/backend-entrypoint.sh`). This is how
+  one catalog image becomes three shards, and it maps directly onto Kubernetes
+  ConfigMaps.
+- The frontend image injects `app.baseUrl` and `backend.baseUrl` into
+  `index.html` at container start (a `<script type="backstage.io/config">`
+  tag, which the frontend reads at boot and which overrides the config baked
+  in at build time). The same image therefore runs in every environment.
+
+## 4. Fast, independent builds
+
+### 4.1 Pipeline
+
+```
+yarn install (once)  ->  per package: bundle on the host  ->  thin docker build  ->  push
+```
+
+1. **Bundle on the host** (`task bundle:<pkg>`): `backstage-cli package build`
+   compiles the package and packs it into `dist/bundle.tar.gz`, plus a
+   *skeleton* listing the workspace `package.json` files it needs. This reuses
+   the host's warm `node_modules` and build caches, which a from-scratch
+   in-Docker build cannot. Task fingerprints the sources, so unchanged bundles
+   are skipped in about 0.1 s.
+2. **Prune the lockfile** (`scripts/prune-lockfile.mjs`, part of the bundle
+   task): writes `dist/deps/`, with the root manifest, the backend's
+   manifests *without devDependencies*, and a `yarn.lock` pruned to exactly
+   those dependencies (`yarn install --mode=update-lockfile`, about 1.5 s, no
+   downloads). Pruned lockfiles are 7.6k to 9.3k lines; the shared one is 32.8k.
+3. **Thin image build**: copy `dist/deps/`, run
+   `yarn workspaces focus --all --production` (with a BuildKit cache mount for
+   the download cache), then copy config and unpack the bundle.
+
+The dependency layer is the expensive one (about 40 s per backend, see 4.3)
+and it is keyed on `dist/deps/` only. Without pruning, it would be keyed on
+the shared root `yarn.lock`, and any dependency change anywhere in the
+monorepo, including a dev tool upgrade, would rerun it in every backend
+image. This was checked directly: adding a plugin module to
+`backend-scaffolder` changed the root lockfile, and only the scaffolder image
+reran its install (36 s); the other four reused their cached layers. Removing
+a devDependency from `backend-catalog` left its own dependency layer cached.
+
+Other choices that keep builds small:
+
+- **Per-Dockerfile ignore files** (`<Dockerfile>.dockerignore`): each build
+  context contains only what that image copies, so builds never ship the
+  monorepo to the daemon.
+- **Images that need no dependency install at all**: the catalog router has no
+  runtime dependencies (the shared shard rules are inlined at build time via
+  Backstage's `inline` packages), the frontend is static files, and the
+  gateway is one config file.
+- **Only the image that needs a toolchain gets it**: TechDocs starts from the
+  official Python image and copies the Node binary in, so no image runs apt
+  and the other backends carry no Python.
+- **One parallel command**: `task build` runs all bundles and image builds
+  concurrently; each image is also a target of its own (`task image:<svc>`).
+
+### 4.2 Proposed CI shape
+
+The same tasks map onto CI without changes:
+
+1. `task install`, `task check` (type-check and unit tests).
+2. For each service whose inputs changed (its package, the shared
+   `catalog-sharding` package for the router and catalog, its `dist/deps`, or
+   shared config): `task release:<service> REGISTRY=... TAG=<git sha>`, as a
+   build matrix.
+3. Persist BuildKit cache between runs, e.g.
+   `DOCKER_BUILD_FLAGS="--cache-from type=registry,ref=<repo>:cache --cache-to type=registry,ref=<repo>:cache,mode=max"`
+   (needs a buildx builder with the `docker-container` driver).
+4. Bring the stack up from the pushed tags and run `task smoke` and `task e2e`.
+
+### 4.3 Measurements
+
+Measured on a 4 vCPU, 15 GB cloud container with Docker 29 and BuildKit. "Cold"
+means no bundles and an empty BuildKit cache, including package download
+caches; base images were already present, as they usually are on CI runners.
+
+| What | Time |
+| --- | --- |
+| All 8 images from cold, in parallel (`task build`) | 1 m 35 s |
+| Frontend bundle | 13 s |
+| Backend or router bundle | ~3 s |
+| Backend image, dependency layer (cold, or with only the download cache warm) | 39 to 43 s |
+| Backend image after a code change | ~3 s |
+| Router / frontend / gateway image | 4 s / 7 s / 2 s |
+| Router code change to new router serving traffic (`task deploy:catalog-router`) | 12 s |
+| Change to config baked into every image: all 8 images rebuilt | 5 s |
+| Dependency added to one backend: that image rebuilt, the rest cached | 36 s |
+| Stack start from images, 11 containers healthy (`task up`) | 16 to 24 s |
+| Add two replicas to a deployment (`task scale`) | ~6 s |
+
+The dependency install dominates and is barely helped by a warm download cache
+(it is extraction and linking, not downloading). Pruning is what keeps it off
+the common path. Further options are in 9.2.
+
+## 5. Scaling
+
+Every deployment scales independently: `task scale SERVICE=catalog-default
+REPLICAS=3` locally, a replica count or HPA per Deployment in Kubernetes.
+
+**Why replicas are safe.** Backstage keeps coordination state in Postgres: the
+scheduler takes task locks in the plugin database, catalog processing claims
+entities in the shard's database, and the event bus is Postgres backed. The
+replicas of one deployment share their database; deployments do not share
+anything but the server.
+
+**Load balancing.** Two places balance traffic, and both follow replicas as
+they come and go:
+
+- *Gateway*: one upstream per deployment, `least_conn`, names re-resolved
+  every 5 s. With two search replicas, 20 requests split 10/10.
+- *Router to shards*: the router connects to shards directly. Plain DNS plus
+  keep-alive pinned *all* traffic to the replica that existed when the
+  connection opened (30 of 30 lookups hit replica 1 after scaling to three).
+  The router now resolves every replica address (5 s TTL), picks one per
+  request round-robin and keeps a keep-alive pool per replica. The same 30
+  lookups split 11/9/10. A request that fails to connect (a replica that just
+  went away) is retried once on another replica; scaling back down to one
+  replica under traffic produced no failed requests.
+
+**Caveats** that matter once replicas > 1:
+
+- TechDocs with the `local` publisher keeps generated sites on local disk, so
+  replicas do not share them. Production should use the `external` builder
+  (generate in CI) and object storage.
+- The scaffolder runs tasks in a local working directory; it is fine with
+  replicas (tasks are claimed from the database) but needs disk sized for it.
+- Signals keeps websockets open on `core`; the event bus fans signals out to
+  all replicas.
+- Many small connection pools: every plugin of every replica holds one. The
+  POC caps pools at 5 and raises Postgres `max_connections`; production should
+  add PgBouncer or split databases.
+
+## 6. Catalog sharding by query parameters
+
+### 6.1 Can nginx do it alone?
+
+Partly. nginx can route on query parameters, and the gateway does exactly
+that for explicit selection: `?shard=payments` (or `X-Catalog-Shard:
+payments`) goes straight to that shard, and the gateway strips the parameter
+first, because the catalog's request validator rejects unknown parameters
+with a 400.
+
+Routing on the catalog's *own* parameters does not fit in nginx config:
+
+- Filters are a small language: `filter=kind=component,metadata.namespace=payments`
+  with repeated `filter` parameters OR-ed, keys and values case-insensitive,
+  and values URL-encoded. nginx's `$arg_filter` only sees the first one.
+- Some requests carry their routing data in a JSON body (`POST
+  /entities/by-refs`, predicate queries), and follow-up pages carry it in an
+  opaque cursor.
+- Many requests legitimately span shards (the catalog table lists every
+  component), and the answer must be one merged, sorted, paginated response.
+
+So the gateway does the explicit part, and a small **catalog router** that
+understands the catalog API does the rest.
+
+### 6.2 Topology and ownership
+
+`deploy/catalog-shards.json` is read by the router and by every shard:
+
+```json
+{ "catalogSharding": { "shards": [
+  { "name": "org",      "target": "http://catalog-org:7007/api/catalog",      "match": { "kinds": ["User", "Group"] } },
+  { "name": "payments", "target": "http://catalog-payments:7007/api/catalog", "match": { "namespaces": ["payments"] } },
+  { "name": "default",  "target": "http://catalog-default:7007/api/catalog" }
+], "localKinds": ["Location"] } }
+```
+
+An entity belongs to the **first** shard whose rule matches its kind and
+namespace; the last shard is a catch-all. People and teams are in `org` even
+when namespaced `payments`. `Location` entities are *local*: every shard
+creates them for its own registered locations, so they may be in any shard.
+
+The rules live in one place, `packages/catalog-sharding`, which both the
+router and the catalog backend inline at build time.
+
+**Ownership is enforced, not assumed.** Each shard runs a small processor
+(`packages/backend-catalog/src/shardGuard.ts`) that rejects entities owned by
+another shard, with an error naming the right one. Routing relies on this
+invariant: if an entity could appear in a shard the rules say it is not in,
+pruning would silently miss it.
+
+### 6.3 Pruning
+
+For each request the router computes the set of (kind, namespace)
+combinations that matching entities can have, as a list of alternatives. It
+handles legacy filters, filter predicates (`$all`, `$any`, `$in`; `$not` and
+unknown operators widen to "anything"), entity refs and paths. Then, for each
+alternative, it walks the rules in order, keeps every shard whose rule *may*
+match, and stops at the first one that *must* match (first match hides the
+rest). A query that may touch local kinds goes to every shard.
+
+| Request | Shards |
+| --- | --- |
+| `filter=kind=group` | org |
+| `filter=kind=component` | payments, default |
+| `filter=kind=component,metadata.namespace=payments` | payments |
+| `filter=kind=user,metadata.namespace=payments` | org |
+| `entities/by-name/component/payments/ledger` | payments |
+| `filter=kind=group&filter=kind=api,metadata.namespace=payments` | org, payments |
+| `filter=metadata.namespace=payments` (no kind) | all three |
+| `facet=kind` (no filter) | all three |
+
+The extraction is deliberately conservative: it may include a shard that
+turns out to have nothing, but never skips one that could have results.
+
+### 6.4 How each endpoint is served
+
+| Endpoint | Strategy |
+| --- | --- |
+| `GET /entities/by-name/...`, `.../ancestry`, `/locations/by-entity/...` | The owner from the path; streamed straight through |
+| `GET` and `POST /entities/by-query` | Pruned; one shard is streamed through (cursors wrapped), several are merged page by page (6.5) |
+| `GET /entities` (legacy list; the Ownership card and older clients use it) | Pruned; merged and sorted; `limit`/`offset`/`after` applied after the merge |
+| `GET` and `POST /entity-facets` | Pruned; counts summed per value |
+| `POST /entities/by-refs` | Refs split by owner, one request per shard, answers put back in request order |
+| `GET`/`DELETE /entities/by-uid/:uid`, `/locations/:id` | Asked of every shard; first success wins |
+| `POST /refresh`, `/validate-entity`, permission `apply-conditions` | Routed to the owner taken from the body |
+| `POST /locations` | Dry run on every shard; registered on the one whose guard accepts all the entities (6.7) |
+| `GET /.backstage/auth/v1/jwks.json` | Union of every shard's keys (6.6) |
+| Anything else (OpenAPI spec, analyze-location, actions) | Catch-all shard |
+
+Every response carries `x-catalog-route` (`single`, `fanout` or `pinned`) and
+`x-catalog-shards`, and the gateway logs both. Watching the catalog UI shows
+the pruning working: `facet=spec.type&filter=kind=component` touches two
+shards, a group page's lookups touch only `org`.
+
+### 6.5 Pagination across shards
+
+`/entities/by-query` pages with opaque cursors, and the catalog UI uses it for
+the main table, the owner picker and counts; the search collators page
+through the whole catalog with it. The router keeps paging consistent:
+
+- **One shard**: the shard's cursor is wrapped with the shard's name, so the
+  next page goes back to the same shard.
+- **Several shards**: each page is a k-way merge of a window from every
+  shard. The cursor records, per shard, how many items earlier pages used, so
+  the next page asks each shard for `limit` items from its own offset.
+  `totalItems` is the sum. A previous page is rebuilt by merging the `limit`
+  items before each shard's offset and keeping the last `limit`.
+- The merge always takes from the head of each shard's list, so every shard is
+  consumed in its own order even if the router's comparator disagreed with a
+  shard. That is what makes paging gap and duplicate free in both directions;
+  the router's tests check it page by page.
+- Cursors stay base64 JSON. `CatalogClient` decides between GET and POST for
+  the next page by looking for a `query` key in the decoded cursor, so router
+  cursors carry one exactly when the original request was a POST.
+
+Ordering matches a single catalog: the comparator reproduces the catalog's SQL
+ordering (lowercased values, entity id as tie breaker, entities missing the
+sort field excluded or sorted last, depending on the endpoint). Postgres runs
+with `C` collation so string order is byte order on both sides. With another
+collation, merged pages would still never skip or repeat an entity; the
+interleaving could just differ slightly for punctuation.
+
+Offsets assume the result set is stable while paging. The catalog's own
+keyset cursors tolerate concurrent writes better; under heavy churn a merged
+page can shift by an item.
+
+### 6.6 Auth across shards
+
+Each shard signs plugin tokens with its own keys, stored in its own database.
+A plugin verifying a token from "the catalog" fetches the JWKS from the
+catalog's base URL, which is the router, so the router serves the **union of
+all shards' keys**. Without this, permission checks would fail whenever the
+verifier's JWKS request reached a different shard than the one that signed.
+An alternative is a shared static key pair for all shards
+(`backend.auth.pluginKeyStore`), which removes the fan-out at the cost of key
+distribution.
+
+### 6.7 Writes
+
+Most writes name their entity (`refresh`, `validate-entity`, deletes by uid)
+and go to its owner. Registering a location is different: the owner depends on
+what the file contains. The router dry-runs the registration on every shard,
+and since each shard's guard rejects entities it does not own, exactly one
+shard accepts a well-formed location. The router registers it there. A file
+that mixes entities from different shards is rejected with the guard's error,
+which names the owning shards. Clients that know the shard can say so with
+`?shard=`.
+
+### 6.8 What does not cross shards
+
+The catalog computes relations while processing the entity that *declares*
+them, and stores both directions in that entity's shard. `ledger` (payments)
+declares `ownedBy: team-payments` (org), so `team-payments ownerOf ledger`
+lives in the payments shard, and the group entity served by `org` does not
+list it. In the UI:
+
+![The team-payments page: the Ownership card counts entities from the payments shard, while the relations graph shows no ownerOf edges](images/group-cross-shard-ownership.png)
+
+- **Works**: anything that *queries* by relation, because the query fans out.
+  The Ownership card (`relations.ownedBy=group:default/team-payments`), owned
+  entity counts, search, and every forward relation (`ledger` shows its owner,
+  `service-gateway` its consumed API in another shard).
+- **Missing**: reverse relations on the target entity when source and target
+  are in different shards, e.g. `ownerOf` edges on the team's relation graph,
+  `apiConsumedBy` on an API consumed from another shard, `hasPart` on a system
+  whose components live elsewhere. Ancestry (`/ancestry`) is also per shard.
+
+Choosing shard boundaries along relations keeps this small: teams own what is
+in their namespace, and org data (users and groups) is referenced *from*
+everything but declares few relations itself. Fixing it fully would mean
+federating relations: either the router adds reverse relations at read time
+(a relation query per entity read, cacheable), or shards exchange relation
+edges through the event bus.
+
+Other limits worth knowing:
+
+- An unconstrained query touches every shard, and the unpaginated `GET
+  /entities` is buffered in the router. Paginated endpoints are bounded.
+- A failing shard fails fan-out requests (502, or the shard's own error)
+  rather than returning partial results.
+- Moving a namespace between shards is a re-registration, not a migration:
+  change the rule, register the locations with the new owner, let the old
+  shard's copies be orphaned and cleaned up.
+
+### 6.9 Alternatives considered
+
+- **nginx with njs scripting** for merging: possible, but the merge, cursor
+  and partitioning logic is far easier to test as code; the router has
+  unit and integration tests against fake shards.
+- **Shard by kind only**: almost every request carries a kind, so routing is
+  nearly always a single shard, but kinds do not match ownership boundaries
+  and most relations would cross shards. The rule format supports both, and
+  the demo topology mixes them on purpose.
+- **A global read replica of the whole catalog** next to the shards: simple
+  reads, but it re-centralizes the data and the processing load that sharding
+  was meant to split.
+
+## 7. Configuration reference
+
+**Adding a catalog shard** (say `platform` for a `platform` namespace):
+
+1. `deploy/catalog-shards.json`: add the shard *before* the catch-all, with a
+   `target` and a `match` rule.
+2. `deploy/catalog/platform.yaml`: `catalogSharding.self`, a database prefix,
+   and its `catalog.locations` and `catalog.rules`.
+3. `docker-compose.yml`: a service from the `backend-catalog` image mounting
+   both files, like the existing shards.
+4. `gateway/default.conf.template`: an upstream and a line in each shard map,
+   for `?shard=platform`.
+
+No image needs rebuilding.
+
+**Environment variables** used by the backends: `APP_BASE_URL`,
+`BACKEND_BASE_URL`, `INTERNAL_GATEWAY_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`,
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, `GITHUB_TOKEN` (optional),
+`LOG_LEVEL`. The router reads `CATALOG_SHARDS_FILE`, `PORT`,
+`CATALOG_BASE_PATH`, `SHARD_TIMEOUT_MS` and `LOG_LEVEL`. The frontend image
+reads `APP_BASE_URL` and `BACKEND_BASE_URL`.
+
+**Task variables**: `REGISTRY`, `IMAGE_NAMESPACE`, `TAG`, `NODE_VERSION`,
+`EXTRA_CA_CERT` (CA for TLS-intercepting proxies, passed to builds as a
+secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`.
+
+## 8. Testing
+
+- `task check`: type-check plus 46 unit tests, including shard pruning, the
+  guard, and router integration tests against in-process fake shards (paging
+  forward and back without gaps, ordering, field projection, POST cursors,
+  by-refs reassembly, JWKS union, pinning, shard outages).
+- `task smoke`: 16 checks against the running stack, covering the gateway, the
+  frontend's runtime config, guest sign-in through the org shard, pruning,
+  fan-out paging, facets, by-refs, cross-shard ownership, the JWKS union,
+  `?shard=` routing, the guard, search across shards, the scaffolder, and
+  TechDocs generation.
+- `task e2e`: Playwright tests in a real browser, including that the catalog
+  table lists components from two shards in one sorted list and that a team
+  page shows ownership from another shard.
+
+## 9. From POC to production
+
+### 9.1 Kubernetes
+
+- One Deployment per service, one per catalog shard from the same image.
+  Mount per-deployment config as ConfigMaps into `/app/config.d`.
+- Readiness and liveness from `/.backstage/health/v1/readiness` and
+  `/liveness`; the router has `/healthz`.
+- Headless Services for the catalog shards, so the router's per-request
+  balancing sees pod IPs; regular Services elsewhere. The gateway image
+  already reads its resolver from `/etc/resolv.conf`.
+- Keep the nginx gateway as a Deployment behind the Ingress, or move its routes
+  into the ingress controller or Gateway API. Its config is a plain list of
+  path-to-service mappings.
+- An HPA per Deployment: catalog shards and the router on CPU and request
+  rate, the scaffolder on CPU, `core` on CPU (permission checks).
+
+### 9.2 Builds and delivery
+
+- The CI shape from 4.2, with immutable tags (git SHA), image digests
+  promoted between environments, SBOMs and signing.
+- Smaller images: production `node_modules` is most of each backend image
+  (760 to 950 MB uncompressed); dropping source maps, unused native modules and
+  optional cloud SDKs would cut size and pull time.
+- Backstage upgrades change every backend's dependencies by design; they
+  rebuild everything once, in parallel.
+
+### 9.3 Hardening
+
+- A real sign-in provider (OIDC, GitHub, ...) and a permission policy.
+- TechDocs with the `external` builder and S3 or GCS publishing.
+- TLS at the edge; remove the `X-Upstream-Addr` debug header; rate limits.
+- PgBouncer (or separate database servers for the catalog shards).
+- Tracing across gateway, router and backends; the router forwards
+  `traceparent`. Per-deployment dashboards and alerts.
+
+### 9.4 Catalog sharding
+
+- Pick the shard key from real data and ownership: namespace per business
+  unit or domain, with org data in its own shard, fits Backstage's model best.
+- Relation federation (6.8), if the missing reverse relations matter to users.
+- Streaming merges and size limits for unpaginated fan-outs; an opt-in partial
+  results mode with a response header listing missing shards.
+- Caching for hot, unconstrained queries such as facets and counts.
+- A runbook for moving a namespace between shards.

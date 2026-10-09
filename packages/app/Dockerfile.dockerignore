@@ -1,0 +1,4 @@
+# Build context for packages/app/Dockerfile: only what it copies.
+*
+!packages/app/docker
+!packages/app/dist

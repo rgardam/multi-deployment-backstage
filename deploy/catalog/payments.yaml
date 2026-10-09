@@ -1,0 +1,15 @@
+# Catalog shard "payments": everything in the "payments" namespace except
+# people and teams (those belong to the org shard, which matches first).
+catalogSharding:
+  self: payments
+
+backend:
+  database:
+    prefix: backstage_shard_payments_
+
+catalog:
+  rules:
+    - allow: [Domain, System, Component, API, Resource, Location]
+  locations:
+    - type: file
+      target: ./examples/payments.yaml

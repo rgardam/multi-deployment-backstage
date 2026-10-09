@@ -1,0 +1,15 @@
+# Catalog shard "org": every User and Group, in any namespace.
+catalogSharding:
+  self: org
+
+backend:
+  database:
+    # Each shard is an independent catalog with its own database.
+    prefix: backstage_shard_org_
+
+catalog:
+  rules:
+    - allow: [User, Group, Location]
+  locations:
+    - type: file
+      target: ./examples/org.yaml

@@ -1,0 +1,89 @@
+# Owned by the "payments" catalog shard: everything in the payments namespace
+# (except people and teams, which always live in the org shard).
+---
+apiVersion: backstage.io/v1alpha1
+kind: Domain
+metadata:
+  name: payments
+  namespace: payments
+spec:
+  owner: group:default/team-payments
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: payments-platform
+  namespace: payments
+spec:
+  owner: group:default/team-payments
+  domain: payments
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payments-service
+  namespace: payments
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/team-payments
+  system: payments-platform
+  providesApis: [payments-api]
+  dependsOn: [resource:payments-db]
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ledger
+  namespace: payments
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/team-payments
+  system: payments-platform
+  consumesApis: [payments-api]
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: checkout-web
+  namespace: payments
+spec:
+  type: website
+  lifecycle: experimental
+  owner: group:default/team-payments
+  system: payments-platform
+  consumesApis: [payments-api]
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: payments-api
+  namespace: payments
+spec:
+  type: openapi
+  lifecycle: production
+  owner: group:default/team-payments
+  system: payments-platform
+  definition: |
+    openapi: 3.0.0
+    info:
+      title: Payments API
+      version: 1.0.0
+    paths:
+      /payments:
+        post:
+          summary: Create a payment
+          responses:
+            '201':
+              description: Created
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: payments-db
+  namespace: payments
+spec:
+  type: database
+  owner: group:default/team-payments
+  system: payments-platform

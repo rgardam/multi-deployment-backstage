@@ -1,0 +1,137 @@
+# Split Backstage deployment: one gateway, one frontend, independently built
+# and scaled backends, and a catalog split into three shards behind a router.
+# Images are built by the Taskfile (`task build`); start with `task up`.
+
+name: backstage-poc
+
+x-backend-env: &backend-env
+  APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+  BACKEND_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+  INTERNAL_GATEWAY_URL: http://gateway:8080
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: '5432'
+  POSTGRES_USER: backstage
+  POSTGRES_PASSWORD: backstage
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+x-backend: &backend
+  init: true
+  restart: unless-stopped
+  environment: *backend-env
+  depends_on:
+    postgres:
+      condition: service_healthy
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - 'fetch("http://127.0.0.1:7007/.backstage/health/v1/readiness").then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))'
+    interval: 5s
+    timeout: 5s
+    retries: 60
+    start_period: 10s
+
+x-catalog-shard: &catalog-shard
+  <<: *backend
+  image: ${IMAGE_PREFIX:-backstage-poc}/backend-catalog:${TAG:-dev}
+
+services:
+  gateway:
+    image: ${IMAGE_PREFIX:-backstage-poc}/gateway:${TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - ${GATEWAY_PORT:-8080}:8080
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/healthz]
+      interval: 5s
+      retries: 20
+
+  app:
+    image: ${IMAGE_PREFIX:-backstage-poc}/app:${TAG:-dev}
+    restart: unless-stopped
+    environment:
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+      BACKEND_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/healthz]
+      interval: 5s
+      retries: 20
+
+  backend-core:
+    <<: *backend
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-core:${TAG:-dev}
+
+  backend-scaffolder:
+    <<: *backend
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-scaffolder:${TAG:-dev}
+
+  backend-search:
+    <<: *backend
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-search:${TAG:-dev}
+
+  backend-techdocs:
+    <<: *backend
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-techdocs:${TAG:-dev}
+
+  # Serves /api/catalog for every shard: routes on the request's own query
+  # parameters and fans out (and merges) when several shards may match.
+  catalog-router:
+    image: ${IMAGE_PREFIX:-backstage-poc}/catalog-router:${TAG:-dev}
+    init: true
+    restart: unless-stopped
+    environment:
+      CATALOG_SHARDS_FILE: /config/catalog-shards.json
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ./deploy/catalog-shards.json:/config/catalog-shards.json:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - 'fetch("http://127.0.0.1:7007/healthz").then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))'
+      interval: 5s
+      retries: 20
+
+  # Three deployments of the same catalog image. The shared topology file and
+  # a per-shard file (name, database, locations) make each one a shard.
+  catalog-org:
+    <<: *catalog-shard
+    volumes:
+      - ./deploy/catalog-shards.json:/app/config.d/10-catalog-shards.json:ro
+      - ./deploy/catalog/org.yaml:/app/config.d/20-shard.yaml:ro
+
+  catalog-payments:
+    <<: *catalog-shard
+    volumes:
+      - ./deploy/catalog-shards.json:/app/config.d/10-catalog-shards.json:ro
+      - ./deploy/catalog/payments.yaml:/app/config.d/20-shard.yaml:ro
+
+  catalog-default:
+    <<: *catalog-shard
+    volumes:
+      - ./deploy/catalog-shards.json:/app/config.d/10-catalog-shards.json:ro
+      - ./deploy/catalog/default.yaml:/app/config.d/20-shard.yaml:ro
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: backstage
+      # Byte-order collation, so shards sort strings exactly like the router
+      # does when it merges their results
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    # Every plugin of every replica holds a small pool
+    command: [postgres, -c, max_connections=400]
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U backstage]
+      interval: 2s
+      retries: 30
+
+volumes:
+  postgres:

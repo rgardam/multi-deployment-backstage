@@ -1,0 +1,11 @@
+# Build context for packages/backend-catalog/Dockerfile: only what it copies.
+*
+!.yarn/releases
+!.yarnrc.yml
+!backstage.json
+!app-config.yaml
+!app-config.production.yaml
+!docker/backend-entrypoint.sh
+!packages/backend-catalog/dist/deps
+!packages/backend-catalog/dist/bundle.tar.gz
+!examples

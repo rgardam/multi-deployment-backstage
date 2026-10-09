@@ -1,0 +1,16 @@
+# Catalog shard "default": the catch-all for everything no other shard owns.
+catalogSharding:
+  self: default
+
+backend:
+  database:
+    prefix: backstage_shard_default_
+
+catalog:
+  rules:
+    - allow: [Domain, System, Component, API, Resource, Template, Location]
+  locations:
+    - type: file
+      target: ./examples/entities.yaml
+    - type: file
+      target: ./examples/template/template.yaml

@@ -1,0 +1,31 @@
+{
+  "name": "backend-scaffolder",
+  "version": "0.0.0",
+  "main": "dist/index.cjs.js",
+  "types": "src/index.ts",
+  "private": true,
+  "backstage": {
+    "role": "backend"
+  },
+  "scripts": {
+    "start": "backstage-cli package start",
+    "build": "backstage-cli package build",
+    "lint": "backstage-cli package lint",
+    "test": "backstage-cli package test",
+    "clean": "backstage-cli package clean"
+  },
+  "dependencies": {
+    "@backstage/backend-defaults": "^0.18.0",
+    "@backstage/plugin-scaffolder-backend": "^4.2.0",
+    "@backstage/plugin-scaffolder-backend-module-github": "^0.10.0",
+    "@backstage/plugin-scaffolder-backend-module-notifications": "^0.1.26",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "@backstage/cli": "^0.36.6",
+    "better-sqlite3": "^12.0.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

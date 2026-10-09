@@ -1,0 +1,71 @@
+# Owned by the "default" catalog shard (the catch-all).
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: examples
+spec:
+  owner: guests
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: example-website
+spec:
+  type: website
+  lifecycle: experimental
+  owner: guests
+  system: examples
+  providesApis: [example-grpc-api]
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: example-grpc-api
+spec:
+  type: grpc
+  lifecycle: experimental
+  owner: guests
+  system: examples
+  definition: |
+    syntax = "proto3";
+
+    service Exampler {
+      rpc Example (ExampleMessage) returns (ExampleMessage) {};
+    }
+
+    message ExampleMessage {
+      string example = 1;
+    };
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: developer-platform
+spec:
+  owner: group:default/team-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: platform-docs
+  description: How the developer platform fits together (rendered by TechDocs)
+  annotations:
+    backstage.io/techdocs-ref: dir:./platform-docs
+spec:
+  type: documentation
+  lifecycle: production
+  owner: group:default/team-platform
+  system: developer-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: service-gateway
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/team-platform
+  system: developer-platform
+  # Cross-shard relation: this API lives in the payments shard
+  consumesApis: [api:payments/payments-api]

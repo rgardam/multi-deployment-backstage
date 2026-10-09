@@ -1,0 +1,3 @@
+# Build context for gateway/Dockerfile: only what it copies.
+*
+!gateway/default.conf.template

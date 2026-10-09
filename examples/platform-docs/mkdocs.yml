@@ -1,0 +1,5 @@
+site_name: Developer platform
+nav:
+  - Overview: index.md
+plugins:
+  - techdocs-core

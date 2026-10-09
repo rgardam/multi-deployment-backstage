@@ -1,0 +1,10 @@
+# Build context for packages/backend-search/Dockerfile: only what it copies.
+*
+!.yarn/releases
+!.yarnrc.yml
+!backstage.json
+!app-config.yaml
+!app-config.production.yaml
+!docker/backend-entrypoint.sh
+!packages/backend-search/dist/deps
+!packages/backend-search/dist/bundle.tar.gz

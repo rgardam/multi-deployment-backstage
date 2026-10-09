@@ -1,0 +1,21 @@
+{
+  "catalogSharding": {
+    "shards": [
+      {
+        "name": "org",
+        "target": "http://catalog-org:7007/api/catalog",
+        "match": { "kinds": ["User", "Group"] }
+      },
+      {
+        "name": "payments",
+        "target": "http://catalog-payments:7007/api/catalog",
+        "match": { "namespaces": ["payments"] }
+      },
+      {
+        "name": "default",
+        "target": "http://catalog-default:7007/api/catalog"
+      }
+    ],
+    "localKinds": ["Location"]
+  }
+}

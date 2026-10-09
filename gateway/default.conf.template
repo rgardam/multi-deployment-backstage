@@ -1,0 +1,164 @@
+# Backstage edge gateway.
+#
+# The one entry point for browsers *and* for backend-to-backend calls: every
+# backend's discovery config resolves plugins to http://gateway:8080/api/<id>.
+# So this file is the only place that knows which deployment hosts which
+# plugin. Moving a plugin to another deployment means changing a location
+# here, nothing else.
+
+# Docker's or Kubernetes' DNS (filled in at startup). A short TTL plus
+# "resolve" below means replicas are picked up as they are scaled up or down.
+resolver ${NGINX_LOCAL_RESOLVERS} valid=5s ipv6=off;
+resolver_timeout 2s;
+
+# One upstream group per deployment
+upstream app {
+    zone app 64k;
+    server app:8080 resolve;
+    keepalive 16;
+}
+upstream backend_core {
+    zone backend_core 64k;
+    least_conn;
+    server backend-core:7007 resolve;
+    keepalive 32;
+}
+upstream backend_scaffolder {
+    zone backend_scaffolder 64k;
+    least_conn;
+    server backend-scaffolder:7007 resolve;
+    keepalive 16;
+}
+upstream backend_search {
+    zone backend_search 64k;
+    least_conn;
+    server backend-search:7007 resolve;
+    keepalive 16;
+}
+upstream backend_techdocs {
+    zone backend_techdocs 64k;
+    least_conn;
+    server backend-techdocs:7007 resolve;
+    keepalive 16;
+}
+upstream catalog_router {
+    zone catalog_router 64k;
+    least_conn;
+    server catalog-router:7007 resolve;
+    keepalive 64;
+}
+# Direct shard access, used when a request names its shard explicitly
+upstream catalog_org {
+    zone catalog_org 64k;
+    least_conn;
+    server catalog-org:7007 resolve;
+    keepalive 16;
+}
+upstream catalog_payments {
+    zone catalog_payments 64k;
+    least_conn;
+    server catalog-payments:7007 resolve;
+    keepalive 16;
+}
+upstream catalog_default {
+    zone catalog_default 64k;
+    least_conn;
+    server catalog-default:7007 resolve;
+    keepalive 16;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+# Catalog routing, step 1 (here): a request may name its shard with
+# ?shard=<name> or an X-Catalog-Shard header, and then goes straight to it.
+# Step 2 (the catalog router): everything else is routed from the catalog's
+# own query parameters (kind / namespace filters, entity refs, ...).
+map $http_x_catalog_shard $catalog_by_header {
+    default   catalog_router;
+    org       catalog_org;
+    payments  catalog_payments;
+    \default  catalog_default;
+}
+map $arg_shard $catalog_upstream {
+    default   $catalog_by_header;
+    org       catalog_org;
+    payments  catalog_payments;
+    \default  catalog_default;
+}
+# ?shard= is gateway-only; strip it so the catalog's validator never sees it
+map $args $catalog_args {
+    default $args;
+    "~^(?<before>(?:.*&)?)shard=[^&]*&?(?<after>.*)$" "$before$after";
+}
+# The path exactly as the client sent it (still percent-encoded)
+map $request_uri $request_path {
+    "~^(?<path>[^?]*)" $path;
+}
+
+log_format gateway '$remote_addr "$request" $status $body_bytes_sent '
+                   'rt=$request_time upstream=$upstream_addr '
+                   'catalog_route=$upstream_http_x_catalog_route '
+                   'catalog_shards=$upstream_http_x_catalog_shards';
+
+server {
+    listen 8080 default_server;
+    server_name _;
+    access_log /dev/stdout gateway;
+    client_max_body_size 50m;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 300s;
+    # A replica that fails before answering is retried on another one
+    # (idempotent requests only, nginx never retries POSTs by default)
+    proxy_next_upstream error timeout http_502 http_503;
+
+    # Which replica answered. Handy for the scaling demo; drop in production.
+    add_header X-Upstream-Addr $upstream_addr always;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location /api/catalog/ {
+        proxy_pass http://$catalog_upstream$request_path?$catalog_args;
+    }
+
+    location /api/scaffolder/ {
+        proxy_pass http://backend_scaffolder;
+        # Task logs stream as server-sent events
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+
+    location /api/search/ {
+        proxy_pass http://backend_search;
+    }
+
+    location /api/techdocs/ {
+        proxy_pass http://backend_techdocs;
+        # Generating a site on first view can take a while
+        proxy_read_timeout 10m;
+    }
+
+    # Every other plugin (auth, permission, proxy, events, notifications,
+    # signals, user-settings, kubernetes, mcp-actions) lives in backend-core.
+    location /api/ {
+        proxy_pass http://backend_core;
+        # Signals keeps a websocket open
+        proxy_read_timeout 1h;
+    }
+
+    location / {
+        proxy_pass http://app;
+    }
+}

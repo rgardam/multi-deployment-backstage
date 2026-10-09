@@ -1,0 +1,39 @@
+{
+  "name": "backend-core",
+  "version": "0.0.0",
+  "main": "dist/index.cjs.js",
+  "types": "src/index.ts",
+  "private": true,
+  "backstage": {
+    "role": "backend"
+  },
+  "scripts": {
+    "start": "backstage-cli package start",
+    "build": "backstage-cli package build",
+    "lint": "backstage-cli package lint",
+    "test": "backstage-cli package test",
+    "clean": "backstage-cli package clean"
+  },
+  "dependencies": {
+    "@backstage/backend-defaults": "^0.18.0",
+    "@backstage/plugin-auth-backend": "^0.30.1",
+    "@backstage/plugin-auth-backend-module-guest-provider": "^0.2.23",
+    "@backstage/plugin-events-backend": "^0.6.6",
+    "@backstage/plugin-kubernetes-backend": "^0.21.11",
+    "@backstage/plugin-mcp-actions-backend": "^0.2.2",
+    "@backstage/plugin-notifications-backend": "^0.6.9",
+    "@backstage/plugin-permission-backend": "^0.7.16",
+    "@backstage/plugin-permission-backend-module-allow-all-policy": "^0.2.23",
+    "@backstage/plugin-proxy-backend": "^0.6.18",
+    "@backstage/plugin-signals-backend": "^0.3.19",
+    "@backstage/plugin-user-settings-backend": "^0.4.7",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "@backstage/cli": "^0.36.6",
+    "better-sqlite3": "^12.0.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

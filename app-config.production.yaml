@@ -1,0 +1,66 @@
+# Configuration shared by every container (frontend excluded, it gets its
+# runtime config injected by its own entrypoint). Everything that differs per
+# environment comes from environment variables; everything that differs per
+# backend deployment comes from files mounted into /app/config.d.
+
+app:
+  baseUrl: ${APP_BASE_URL}
+
+backend:
+  # The public URL of the gateway. Browsers and other clients use this.
+  baseUrl: ${BACKEND_BASE_URL}
+  listen: ':7007'
+  cors:
+    origin: ${APP_BASE_URL}
+    methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+    credentials: true
+  database:
+    client: pg
+    connection:
+      host: ${POSTGRES_HOST}
+      port: ${POSTGRES_PORT}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+    # Every plugin in every replica of every backend opens its own pool, so
+    # keep each pool small and scale with replicas instead.
+    knexConfig:
+      pool:
+        min: 0
+        max: 5
+
+# This is what makes the split work: every backend resolves every plugin,
+# including its own, through the gateway. The gateway knows which deployment
+# hosts which plugin, so no backend needs to know the topology, and moving a
+# plugin between deployments is a gateway change only.
+discovery:
+  endpoints:
+    - target:
+        internal: ${INTERNAL_GATEWAY_URL}/api/{{pluginId}}
+        external: ${BACKEND_BASE_URL}/api/{{pluginId}}
+      plugins: ['*']
+
+events:
+  # The event bus is hosted by backend-core and every split backend relies on
+  # it. "auto" (the default) gives up on the bus for good if it gets a 404,
+  # which happens when a backend starts before backend-core is ready.
+  useEventBus: always
+
+auth:
+  providers:
+    guest:
+      # Sign in as the catalog user (served by the org shard), so the session
+      # carries real group ownership.
+      userEntityRef: user:default/guest
+      # POC only: lets the guest provider run with NODE_ENV=production.
+      dangerouslyAllowOutsideDevelopment: true
+
+catalog:
+  # Each catalog shard brings its own locations (see deploy/catalog/*.yaml).
+  locations: []
+
+techdocs:
+  builder: 'local'
+  generator:
+    runIn: 'local'
+  publisher:
+    type: 'local'
