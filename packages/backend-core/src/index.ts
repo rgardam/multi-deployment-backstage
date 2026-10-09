@@ -27,4 +27,9 @@ backend.add(import('@backstage/plugin-signals-backend'));
 backend.add(import('@backstage/plugin-kubernetes-backend'));
 backend.add(import('@backstage/plugin-mcp-actions-backend'));
 
+// Local plugin from plugins/noticeboard-backend. It is bundled into this image
+// like any npm dependency; the gateway already routes /api/noticeboard here
+// because everything not split out lands in backend-core.
+backend.add(import('@internal/backstage-plugin-noticeboard-backend'));
+
 backend.start();

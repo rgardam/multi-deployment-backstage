@@ -27,6 +27,7 @@
     "@backstage/plugin-proxy-backend": "^0.6.18",
     "@backstage/plugin-signals-backend": "^0.3.19",
     "@backstage/plugin-user-settings-backend": "^0.4.7",
+    "@internal/backstage-plugin-noticeboard-backend": "workspace:^",
     "pg": "^8.11.3"
   },
   "devDependencies": {

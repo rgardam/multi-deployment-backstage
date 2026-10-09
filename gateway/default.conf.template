@@ -41,6 +41,12 @@ upstream backend_techdocs {
     server backend-techdocs:7007 resolve;
     keepalive 16;
 }
+upstream backend_scorecards {
+    zone backend_scorecards 64k;
+    least_conn;
+    server backend-scorecards:7007 resolve;
+    keepalive 16;
+}
 upstream catalog_router {
     zone catalog_router 64k;
     least_conn;
@@ -150,8 +156,14 @@ server {
         proxy_read_timeout 10m;
     }
 
+    # Local plugin with a deployment of its own
+    location /api/scorecards/ {
+        proxy_pass http://backend_scorecards;
+    }
+
     # Every other plugin (auth, permission, proxy, events, notifications,
-    # signals, user-settings, kubernetes, mcp-actions) lives in backend-core.
+    # signals, user-settings, kubernetes, mcp-actions, and the local
+    # noticeboard plugin) lives in backend-core.
     location /api/ {
         proxy_pass http://backend_core;
         # Signals keeps a websocket open

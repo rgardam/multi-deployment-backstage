@@ -1,0 +1,10 @@
+# Build context for packages/backend-scorecards/Dockerfile: only what it copies.
+*
+!.yarn/releases
+!.yarnrc.yml
+!backstage.json
+!app-config.yaml
+!app-config.production.yaml
+!docker/backend-entrypoint.sh
+!packages/backend-scorecards/dist/deps
+!packages/backend-scorecards/dist/bundle.tar.gz

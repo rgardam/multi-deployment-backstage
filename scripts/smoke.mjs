@@ -331,5 +331,59 @@ await check(
   },
 );
 
+console.log('\nlocal plugins (plugins/*)');
+await check(
+  'noticeboard, a local plugin inside backend-core, stores notices with their author',
+  async () => {
+    const title = `Smoke test ${Date.now()}`;
+    const created = await request('/api/noticeboard/notices', {
+      method: 'POST',
+      body: JSON.stringify({ title, body: 'Posted by the smoke test' }),
+    });
+    expect(
+      created.res.status === 201,
+      `status ${created.res.status}: ${created.text}`,
+    );
+    expect(
+      created.json.author === 'user:default/guest',
+      `author ${created.json.author}`,
+    );
+    const list = await request('/api/noticeboard/notices');
+    expect(
+      list.json.items.some(n => n.title === title),
+      'the new notice is not listed',
+    );
+    return `${list.json.items.length} notices`;
+  },
+);
+await check(
+  'scorecards, a local plugin with its own deployment, scores an entity from the payments shard',
+  async () => {
+    const r = await request(
+      '/api/scorecards/entities/component/payments/ledger',
+    );
+    expect(r.res.ok, `status ${r.res.status}: ${r.text}`);
+    expect(
+      r.json.entityRef === 'component:payments/ledger' &&
+        r.json.checks.length === 6,
+      r.text,
+    );
+    return `score ${r.json.score}%`;
+  },
+);
+await check(
+  'scorecards summarizes components from every shard through the catalog router',
+  async () => {
+    const r = await request('/api/scorecards/summary?kind=component');
+    expect(r.res.ok, `status ${r.res.status}: ${r.text}`);
+    const namespaces = r.json.namespaces.map(n => n.namespace).join(',');
+    expect(
+      r.json.entities === 6 && namespaces === 'default,payments',
+      `${r.json.entities} components in ${namespaces}`,
+    );
+    return `${r.json.entities} components, average ${r.json.averageScore}%, namespaces ${namespaces}`;
+  },
+);
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);

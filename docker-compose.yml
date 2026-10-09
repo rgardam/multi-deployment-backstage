@@ -75,6 +75,11 @@ services:
     <<: *backend
     image: ${IMAGE_PREFIX:-backstage-poc}/backend-techdocs:${TAG:-dev}
 
+  # A local plugin (plugins/scorecards-backend) deployed as its own service
+  backend-scorecards:
+    <<: *backend
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-scorecards:${TAG:-dev}
+
   # Serves /api/catalog for every shard: routes on the request's own query
   # parameters and fans out (and merges) when several shards may match.
   catalog-router:

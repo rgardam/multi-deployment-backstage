@@ -1,0 +1,1 @@
+export { NoticeboardPage } from './NoticeboardPage';

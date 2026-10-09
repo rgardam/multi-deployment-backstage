@@ -2,3 +2,6 @@
 *
 !packages/app/docker
 !packages/app/dist
+# Only app-backend reads this file, and its order varies between builds, which
+# would change the image when nothing else did
+packages/app/dist/.config-schema.json

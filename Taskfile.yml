@@ -44,13 +44,14 @@ tasks:
       - yarn.lock
       - .yarnrc.yml
       - packages/*/package.json
+      - plugins/*/package.json
     generates:
       - node_modules/.yarn-state.yml
     cmds:
       - yarn install --immutable
 
   check:
-    desc: Type-check and run unit tests (shard rules, catalog router, shard guard)
+    desc: Type-check and run unit tests (shard rules, catalog router, shard guard, plugins)
     deps: [install]
     env:
       CI: 'true'
@@ -65,10 +66,14 @@ tasks:
   bundle:app:
     desc: Build the frontend bundle (packages/app/dist)
     deps: [install]
+    vars:
+      # The app plus every local frontend plugin and library it bundles
+      DIRS:
+        sh: node scripts/workspace-deps.mjs app
     sources:
-      - packages/app/src/**/*
+      - '{{"{"}}{{.DIRS}}{{"}"}}/src/**/*'
+      - '{{"{"}}{{.DIRS}}{{"}"}}/package.json'
       - packages/app/public/**/*
-      - packages/app/package.json
       - app-config.yaml
       - yarn.lock
     generates:
@@ -81,16 +86,25 @@ tasks:
     deps: [install]
     vars:
       PKG: '{{index .MATCH 0}}'
+      # The package plus every local plugin and library that goes into its
+      # bundle, so editing a plugin rebuilds exactly the bundles containing it
+      DIRS:
+        sh: node scripts/workspace-deps.mjs {{index .MATCH 0}}
     label: 'bundle:{{.PKG}}'
     sources:
-      - packages/{{.PKG}}/src/**/*
-      - packages/{{.PKG}}/package.json
-      - packages/catalog-sharding/src/**/*
+      - '{{"{"}}{{.DIRS}}{{"}"}}/src/**/*'
+      - '{{"{"}}{{.DIRS}}{{"}"}}/package.json'
+      # Non-code assets shipped with a package, such as database migrations
+      - '{{"{"}}{{.DIRS}}{{"}"}}/migrations/**/*'
       - package.json
       - yarn.lock
       - scripts/prune-lockfile.mjs
     generates:
       - packages/{{.PKG}}/dist/**/*
+    status:
+      # A backend also needs dist/deps; rebuild if a manual `yarn workspace
+      # <pkg> build` replaced dist/ without it
+      - test ! -f packages/{{.PKG}}/dist/skeleton.tar.gz || test -f packages/{{.PKG}}/dist/deps/yarn.lock
     cmds:
       - yarn workspace {{.PKG}} build
       # Backends: lockfile pruned to this backend, for the image's cached deps layer
@@ -122,10 +136,14 @@ tasks:
     requires:
       vars: [SVC, DOCKERFILE]
     cmds:
+      # --provenance=false keeps the image digest stable when nothing changed,
+      # so unchanged services are not re-pushed or redeployed. Add
+      # DOCKER_BUILD_FLAGS=--provenance=mode=max for SLSA attestations.
       - >-
         docker build
         --file {{.DOCKERFILE}}
         --tag {{.IMAGE_PREFIX}}/{{.SVC}}:{{.TAG}}
+        --provenance=false
         --build-arg NODE_VERSION={{.NODE_VERSION}}
         {{if .EXTRA_CA_CERT}}--secret id=extra_ca,src={{.EXTRA_CA_CERT}}{{end}}
         {{.DOCKER_BUILD_FLAGS}}
@@ -139,6 +157,7 @@ tasks:
       - image:backend-scaffolder
       - image:backend-search
       - image:backend-techdocs
+      - image:backend-scorecards
       - image:catalog-router
       - image:app
       - image:gateway
@@ -162,6 +181,7 @@ tasks:
       - push:backend-scaffolder
       - push:backend-search
       - push:backend-techdocs
+      - push:backend-scorecards
       - push:catalog-router
       - push:app
       - push:gateway
