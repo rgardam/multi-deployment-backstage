@@ -1,0 +1,119 @@
+{
+  "app": {
+    "version": "1.0.0",
+    "fingerprint": "5be29e5ccf36f7a2",
+    "inputs": {
+      "source": "fb57acef19b8e097",
+      "dependencies": "2645350c813964c3",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "e6fc9a1b013f29c3"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "backend-catalog": {
+    "version": "1.0.0",
+    "fingerprint": "6cf038f9bde2d0fd",
+    "inputs": {
+      "source": "457286affc6207e6",
+      "dependencies": "05814ea60ea25e7b",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "b9cae807754110b3"
+    },
+    "buildArgs": {
+      "NODE_VERSION": "24"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "backend-core": {
+    "version": "1.0.0",
+    "fingerprint": "e63166f5ceab15d8",
+    "inputs": {
+      "source": "3d391f3ffbb13265",
+      "dependencies": "210aaf15be2a500f",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "e4c3af14212ef834"
+    },
+    "buildArgs": {
+      "NODE_VERSION": "24"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "backend-scaffolder": {
+    "version": "1.0.0",
+    "fingerprint": "1b3dc82a9598f704",
+    "inputs": {
+      "source": "fd56c7d0aed40056",
+      "dependencies": "e9ac0c42dfc66fc4",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "bc60f25cfbcb0787"
+    },
+    "buildArgs": {
+      "NODE_VERSION": "24"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "backend-scorecards": {
+    "version": "1.0.0",
+    "fingerprint": "aeb3cfd043466bd0",
+    "inputs": {
+      "source": "ea403bff75a33812",
+      "dependencies": "8b204fd1bbcde66b",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "5bdb3df4eb41bdc9"
+    },
+    "buildArgs": {
+      "NODE_VERSION": "24"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "backend-search": {
+    "version": "1.0.0",
+    "fingerprint": "b05bca400c3169ac",
+    "inputs": {
+      "source": "db50ac4e6d28ab7b",
+      "dependencies": "e63030eb84836b09",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "da66745181fba520"
+    },
+    "buildArgs": {
+      "NODE_VERSION": "24"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "backend-techdocs": {
+    "version": "1.0.0",
+    "fingerprint": "f0e5d1ac38dbed77",
+    "inputs": {
+      "source": "762549865b93bf7d",
+      "dependencies": "586de20475b0a47d",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "a2eae94958991117"
+    },
+    "buildArgs": {
+      "NODE_VERSION": "24"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "catalog-router": {
+    "version": "1.0.0",
+    "fingerprint": "34c1a731afb46638",
+    "inputs": {
+      "source": "684505cbe621801f",
+      "dependencies": "26b7cf6ed09df26e",
+      "toolchain": "245bacd7f34cbf64",
+      "image": "542d7901e1d06c0a"
+    },
+    "buildArgs": {
+      "NODE_VERSION": "24"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  },
+  "gateway": {
+    "version": "1.0.0",
+    "fingerprint": "1f11f20cced664ee",
+    "inputs": {
+      "image": "e73dd26666086db5"
+    },
+    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+  }
+}
