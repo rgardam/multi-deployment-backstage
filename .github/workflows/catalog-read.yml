@@ -1,0 +1,38 @@
+# Reads the catalog from CI with this job's GitHub OIDC token: no stored
+# secret. The same script runs locally with `task ci:read`, against the
+# stand-in token service.
+#
+# The Backstage deployment must trust GitHub's issuer (README, "CI access")
+# and be reachable from the runner, e.g. a self-hosted runner in its network.
+name: Read the catalog
+
+on:
+  workflow_dispatch:
+    inputs:
+      backstage-url:
+        description: Backstage base URL, e.g. https://backstage.example.com
+        required: true
+      filter:
+        description: Catalog filter
+        default: kind=component
+
+permissions:
+  contents: read
+  # Lets the job ask GitHub for an OIDC token (ACTIONS_ID_TOKEN_REQUEST_*)
+  id-token: write
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: List entities and their owners
+        env:
+          BACKSTAGE_URL: ${{ inputs.backstage-url }}
+          FILTER: ${{ inputs.filter }}
+          # Must match CI_OIDC_AUDIENCE in the Backstage deployment
+          BACKSTAGE_AUDIENCE: backstage-ci
+        run: node scripts/ci-catalog-read.mjs "$BACKSTAGE_URL" "$FILTER"

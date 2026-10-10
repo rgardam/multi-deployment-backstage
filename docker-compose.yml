@@ -17,11 +17,22 @@ x-backend-env: &backend-env
   POSTGRES_PASSWORD: backstage
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
+  # Whose OIDC tokens CI may read the catalog with (deploy/external-access.yaml).
+  # Defaults to the local stand-in, ci-oidc; README "CI access" has GitHub's.
+  CI_OIDC_ISSUER: ${CI_OIDC_ISSUER:-http://ci-oidc:8080}
+  CI_OIDC_JWKS_URL: ${CI_OIDC_JWKS_URL:-http://ci-oidc:8080/.well-known/jwks}
+  CI_OIDC_AUDIENCE: ${CI_OIDC_AUDIENCE:-backstage-ci}
+
+# Config every backend loads on top of its image's (catalog shards list it
+# again: their own volumes replace this list)
+x-external-access: &external-access ./deploy/external-access.yaml:/app/config.d/30-external-access.yaml:ro
 
 x-backend: &backend
   init: true
   restart: unless-stopped
   environment: *backend-env
+  volumes:
+    - *external-access
   depends_on:
     postgres:
       condition: service_healthy
@@ -110,18 +121,51 @@ services:
     volumes:
       - ./deploy/catalog-shards.json:/app/config.d/10-catalog-shards.json:ro
       - ./deploy/catalog/org.yaml:/app/config.d/20-shard.yaml:ro
+      - *external-access
 
   catalog-payments:
     <<: *catalog-shard
     volumes:
       - ./deploy/catalog-shards.json:/app/config.d/10-catalog-shards.json:ro
       - ./deploy/catalog/payments.yaml:/app/config.d/20-shard.yaml:ro
+      - *external-access
 
   catalog-default:
     <<: *catalog-shard
     volumes:
       - ./deploy/catalog-shards.json:/app/config.d/10-catalog-shards.json:ro
       - ./deploy/catalog/default.yaml:/app/config.d/20-shard.yaml:ro
+      - *external-access
+
+  # Stand-in for a CI platform's OIDC token service, shaped like GitHub
+  # Actions' (docker/ci-oidc/server.mjs). CI asks it for a short-lived token on
+  # localhost:8090; backends check those tokens against its public keys. Not
+  # part of Backstage: with GitHub Actions, GitHub plays this part.
+  ci-oidc:
+    image: node:24-alpine
+    init: true
+    restart: unless-stopped
+    user: node
+    command: [node, /srv/server.mjs]
+    environment:
+      ISSUER: http://ci-oidc:8080
+      REQUEST_TOKEN: ${CI_OIDC_REQUEST_TOKEN:-local-ci-request-token}
+      REPOSITORY: rgardam/rgardam
+      REF: refs/heads/main
+    volumes:
+      - ./docker/ci-oidc/server.mjs:/srv/server.mjs:ro
+      # The signing key, kept across restarts
+      - ci-oidc:/home/node
+    ports:
+      - 127.0.0.1:${CI_OIDC_PORT:-8090}:8080
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - 'fetch("http://127.0.0.1:8080/healthz").then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))'
+      interval: 5s
+      retries: 20
 
   postgres:
     image: postgres:17-alpine
@@ -143,3 +187,4 @@ services:
 
 volumes:
   postgres:
+  ci-oidc:

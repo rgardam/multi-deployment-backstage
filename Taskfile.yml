@@ -30,6 +30,8 @@ vars:
   # shards and the scaffolder on servers of their own
   # (docker-compose.databases.yml). Applies to every task that runs compose.
   DATABASES: '{{.DATABASES | default "shared"}}'
+  # The stand-in CI token service (ci-oidc in docker-compose.yml)
+  CI_OIDC_PORT: '{{.CI_OIDC_PORT | default "8090"}}'
 
 env:
   IMAGE_PREFIX: '{{.IMAGE_PREFIX}}'
@@ -308,8 +310,19 @@ tasks:
       - docker compose up --detach --wait --no-deps --no-recreate --scale {{.SERVICE}}={{.REPLICAS}} {{.SERVICE}}
       - docker compose ps {{.SERVICE}}
 
+  ci:read:
+    desc: 'Read the catalog the way CI does, with an OIDC token instead of a secret, e.g. task ci:read -- kind=api'
+    # What GitHub Actions gives a job with `id-token: write`, pointed at the
+    # stand-in token service
+    env: &ci-env
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'http://localhost:{{.CI_OIDC_PORT}}/token?api-version=2.0'
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: '{{.CI_OIDC_REQUEST_TOKEN | default "local-ci-request-token"}}'
+    cmds:
+      - node scripts/ci-catalog-read.mjs {{.BASE_URL}} {{.CLI_ARGS}}
+
   smoke:
-    desc: Check routing, catalog sharding, auth, search and the frontend on the running stack
+    desc: Check routing, catalog sharding, auth, CI access, search and the frontend on the running stack
+    env: *ci-env
     cmds:
       - node scripts/smoke.mjs {{.BASE_URL}}
 

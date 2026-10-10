@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /*
  * Smoke test for the running stack: gateway routing, catalog sharding and
- * fan-out, cross-backend auth (plugin tokens, permissions), search and the
- * frontend's runtime config. Zero dependencies; needs Node 22+.
+ * fan-out, cross-backend auth (plugin tokens, permissions), CI access with
+ * OIDC tokens, search and the frontend's runtime config. Zero dependencies;
+ * needs Node 22+.
  *
  *   node scripts/smoke.mjs [http://localhost:8080]
  */
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { ciToken } from './lib/ci-token.mjs';
+
 const base = (process.argv[2] ?? 'http://localhost:8080').replace(/\/$/, '');
 let token;
 let failures = 0;
@@ -382,6 +386,69 @@ await check(
       `${r.json.entities} components in ${namespaces}`,
     );
     return `${r.json.entities} components, average ${r.json.averageScore}%, namespaces ${namespaces}`;
+  },
+);
+
+console.log(
+  '\nCI access: an OIDC token from the CI platform instead of a secret',
+);
+// The stand-in token service, unless a CI platform set these already
+process.env.ACTIONS_ID_TOKEN_REQUEST_URL ??=
+  'http://localhost:8090/token?api-version=2.0';
+process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN ??= 'local-ci-request-token';
+const asCi = (path, ciTokenValue, init = {}) =>
+  request(path, {
+    ...init,
+    headers: { authorization: `Bearer ${ciTokenValue}`, ...init.headers },
+  });
+
+await check('a CI token reads components from every shard', async () => {
+  const r = await asCi(
+    '/api/catalog/entities/by-query?filter=kind=component&fields=kind,metadata&limit=50',
+    await ciToken(),
+  );
+  expect(r.res.ok, `status ${r.res.status}: ${r.text}`);
+  expect(
+    r.json.items.length === 6 && r.shards === 'payments,default',
+    `${r.json.items.length} components from shards=${r.shards}`,
+  );
+  return `${r.json.items.length} components, shards=${r.shards}`;
+});
+await check('a CI token cannot change the catalog (refresh: 403)', async () => {
+  const r = await asCi('/api/catalog/refresh', await ciToken(), {
+    method: 'POST',
+    body: JSON.stringify({ entityRef: 'component:payments/ledger' }),
+  });
+  expect(r.res.status === 403, `status ${r.res.status}: ${r.text}`);
+});
+await check('a CI token works only for the catalog (search: 403)', async () => {
+  const r = await asCi('/api/search/query?term=ledger', await ciToken());
+  expect(r.res.status === 403, `status ${r.res.status}: ${r.text}`);
+  return r.json?.error?.message;
+});
+await check('a CI token for another audience is rejected (401)', async () => {
+  const r = await asCi(
+    '/api/catalog/entities?limit=1',
+    await ciToken({ audience: 'another-service' }),
+  );
+  expect(r.res.status === 401, `status ${r.res.status}: ${r.text}`);
+});
+await check(
+  'a CI token with a forged signature is rejected (401)',
+  async () => {
+    // Same header and claims, signed with a key the issuer never published
+    const [header, payload] = (await ciToken()).split('.');
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const signature = sign(
+      'RSA-SHA256',
+      Buffer.from(`${header}.${payload}`),
+      privateKey,
+    ).toString('base64url');
+    const r = await asCi(
+      '/api/catalog/entities?limit=1',
+      `${header}.${payload}.${signature}`,
+    );
+    expect(r.res.status === 401, `status ${r.res.status}: ${r.text}`);
   },
 );
 

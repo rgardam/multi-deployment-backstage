@@ -27,6 +27,10 @@ picked from each request's own query parameters.
   works out which services changed since their last release (their code,
   their own resolved dependencies, the build toolchain, the files their image
   copies), and `task release:changed` builds, versions and pushes only those.
+- **CI access without secrets**: CI jobs read the catalog with the OIDC token
+  their CI platform issues them (GitHub Actions, or a local stand-in), which
+  every backend checks against the issuer's public keys. Read-only, and for
+  the catalog only.
 
 The full design, measurements, limitations and the path to production are in
 [docs/PLAN.md](docs/PLAN.md).
@@ -62,7 +66,7 @@ Requirements: Docker with Compose v2 (BuildKit on), Node 22 or 24, and
 ```sh
 task build    # host bundles + one image per service, all in parallel
 task up       # start everything; Backstage is at http://localhost:8080
-task smoke    # check routing, sharding, auth, search, TechDocs and the plugins
+task smoke    # check routing, sharding, auth, CI access, search, TechDocs and the plugins
 ```
 
 Sign in as the guest user. On the catalog page, "All" lists components from two
@@ -86,6 +90,7 @@ Behind a TLS-intercepting proxy, pass its CA to image builds:
 | `task release:changed REGISTRY=...`             | Build, push and version only the services that changed.                     |
 | `task up:released`                              | Run every service at its released version.                                  |
 | `task up DATABASES=dedicated`                   | Put the catalog shards and the scaffolder on database servers of their own. |
+| `task ci:read -- kind=api`                      | Read the catalog as a CI job does, with an OIDC token instead of a secret.  |
 | `task scale SERVICE=catalog-default REPLICAS=3` | Scale one deployment.                                                       |
 | `task logs -- catalog-router gateway`           | Follow logs.                                                                |
 | `task check`                                    | Type-check and unit tests.                                                  |
@@ -152,6 +157,54 @@ service can move to a database server of its own with no code change:
 and the scaffolder on three more Postgres servers
 ([docs/PLAN.md, section 3.5](docs/PLAN.md#35-databases-and-giving-services-servers-of-their-own)).
 
+## CI access
+
+CI jobs read the catalog with the OIDC token their CI platform issues them,
+so no Backstage secret is stored in CI. Every backend checks those tokens
+against the issuer's public keys (`backend.auth.externalAccess`, type `jwks`,
+in [deploy/external-access.yaml](deploy/external-access.yaml)), and they work
+only for the catalog, only to read.
+
+Locally, `ci-oidc`, a stand-in for GitHub's token service, plays the CI
+platform:
+
+```sh
+task ci:read                                          # components and owners
+task ci:read -- kind=api,metadata.namespace=payments  # any catalog filter
+```
+
+[scripts/ci-catalog-read.mjs](scripts/ci-catalog-read.mjs) is what a CI job
+runs: it asks the CI platform for a token for the audience `backstage-ci`, then
+pages through `/api/catalog/entities/by-query`. In GitHub Actions it gets that
+token from GitHub, as in
+[.github/workflows/catalog-read.yml](.github/workflows/catalog-read.yml), once
+the deployment trusts GitHub's issuer:
+
+```sh
+CI_OIDC_ISSUER=https://token.actions.githubusercontent.com
+CI_OIDC_JWKS_URL=https://token.actions.githubusercontent.com/.well-known/jwks
+CI_OIDC_AUDIENCE=backstage-ci
+```
+
+| Request with a CI token                          | Answer                                                          |
+| ------------------------------------------------ | --------------------------------------------------------------- |
+| Catalog reads, on any shard                      | 200                                                             |
+| Catalog writes (refresh, registering a location) | 403                                                             |
+| Any other plugin (search, scorecards, ...)       | 403, "This token's access is restricted to plugin(s) 'catalog'" |
+| A token for another audience, or forged          | 401                                                             |
+
+Backstage names the caller `external:ci:<the token's sub claim>` in its audit
+log, e.g. `external:ci:repo:rgardam/rgardam:ref:refs/heads/main`.
+
+**Before trusting GitHub's issuer**: Backstage checks a token's signature,
+issuer, audience and expiry, but not which repository it came from, and any
+workflow in any repository can get a GitHub token for any audience. So keep
+such a deployment out of reach of GitHub-hosted runners (call it from
+self-hosted runners in its network), use your enterprise's own issuer
+(`https://token.actions.githubusercontent.com/<enterprise>`), or add a custom
+token handler that also checks `repository_owner`; Backstage takes these
+through `externalTokenHandlersServiceRef`.
+
 ## Releasing only what changed
 
 Each service is versioned and released on its own. `deploy/releases.json`
@@ -208,9 +261,10 @@ its cache is warm. Details are in
 | `packages/catalog-sharding`          | Shard rules shared by the router and the guard, inlined into both at build time                                                   |
 | `plugins/`                           | Local plugins: noticeboard and scorecards, frontend and backend parts                                                             |
 | `gateway/`                           | The nginx gateway image                                                                                                           |
-| `deploy/`                            | Shard topology (`catalog-shards.json`), per-shard catalog config, and the release record (`releases.json`)                        |
-| `docker/`                            | Entrypoint shared by the backend images                                                                                           |
-| `scripts/`                           | Release planning, lockfile pruning, bundle inputs for Task, and the smoke test                                                    |
+| `deploy/`                            | Shard topology (`catalog-shards.json`), per-shard catalog config, CI access, and the release record (`releases.json`)             |
+| `docker/`                            | Entrypoint shared by the backend images, and the stand-in CI token service (`ci-oidc/`)                                           |
+| `scripts/`                           | Release planning, lockfile pruning, bundle inputs for Task, the smoke test, and the CI catalog reader                             |
 | `app-config*.yaml`                   | Config shared by all backends; per-deployment config is mounted into `/app/config.d`                                              |
 | `Taskfile.yml`, `docker-compose.yml` | Orchestration                                                                                                                     |
 | `.github/workflows/release.yml`      | CI: the release plan on pull requests, releases of the changed services on demand                                                 |
+| `.github/workflows/catalog-read.yml` | CI reading the catalog with GitHub's OIDC token, on demand                                                                        |

@@ -211,6 +211,41 @@ monitor and size; credentials per server; and connection limits, since every
 plugin of every replica holds a pool (5 here). A connection pooler such as
 PgBouncer in front of each server helps once replicas multiply.
 
+### 3.6 CI access with OIDC tokens
+
+CI jobs read the catalog with the short-lived OIDC token their CI platform
+issues them, using Backstage's external access of type `jwks`
+(`deploy/external-access.yaml`, mounted into every backend). Nothing is
+shared with CI: a backend that receives such a token checks its signature
+against the issuer's public keys, which it fetches once and caches, and its
+issuer, audience and expiry. The caller becomes the service principal
+`external:ci:<sub>`, e.g. `external:ci:repo:rgardam/rgardam:ref:refs/heads/main`
+in GitHub's case, which the catalog's audit log records.
+
+`accessRestrictions` limit these tokens to the catalog's read permissions.
+Other plugins refuse them (403, "This token's access is restricted to
+plugin(s) 'catalog'"), and so does every catalog write. The permission policy
+is never consulted for service principals: Backstage decides from the
+restrictions alone, so they are the whole of CI's permissions. Through the
+router, a CI token behaves like any other: each shard it reaches checks it.
+
+Locally, `ci-oidc` (`docker/ci-oidc/server.mjs`, run from the stock
+`node:24-alpine` image) stands in for GitHub's token service, with the same
+interface (`ACTIONS_ID_TOKEN_REQUEST_URL` and `_TOKEN`) and claims, so
+`scripts/ci-catalog-read.mjs` runs unchanged locally (`task ci:read`) and in
+GitHub Actions (`.github/workflows/catalog-read.yml`). Pointing the
+deployment at GitHub is three variables: `CI_OIDC_ISSUER`, `CI_OIDC_JWKS_URL`
+and `CI_OIDC_AUDIENCE`.
+
+The `jwks` handler checks no claim other than issuer and audience. GitHub's
+issuer is shared by every repository on GitHub, and a workflow chooses its own
+audience, so with that issuer any workflow can get a token this deployment
+accepts. Either the deployment stays out of reach of GitHub-hosted runners, or
+the issuer is the enterprise's own
+(`https://token.actions.githubusercontent.com/<enterprise>`), or a custom
+handler registered through `externalTokenHandlersServiceRef` also checks
+`repository_owner` or `repository`.
+
 ## 4. Fast, independent builds
 
 ### 4.1 Pipeline
@@ -891,7 +926,8 @@ No image needs rebuilding.
 **Environment variables** used by the backends: `APP_BASE_URL`,
 `BACKEND_BASE_URL`, `INTERNAL_GATEWAY_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`,
 `POSTGRES_USER`, `POSTGRES_PASSWORD`, `GITHUB_TOKEN` (optional),
-`LOG_LEVEL`. The router reads `CATALOG_SHARDS_FILE`, `PORT`,
+`LOG_LEVEL`, and for CI access (3.6) `CI_OIDC_ISSUER`, `CI_OIDC_JWKS_URL` and
+`CI_OIDC_AUDIENCE`. The router reads `CATALOG_SHARDS_FILE`, `PORT`,
 `CATALOG_BASE_PATH`, `SHARD_TIMEOUT_MS` and `LOG_LEVEL`. The frontend image
 reads `APP_BASE_URL` and `BACKEND_BASE_URL`.
 
@@ -915,12 +951,15 @@ or `major`, for `release:changed`).
   (code, tests and docs, a shared library, an inline package, config, a
   Dockerfile, a dependency, the toolchain, the Node.js version) and exactly
   the services each must flag.
-- `task smoke`: 19 checks against the running stack, covering the gateway, the
+- `task smoke`: 24 checks against the running stack, covering the gateway, the
   frontend's runtime config, guest sign-in through the org shard, pruning,
   fan-out paging, facets, by-refs, cross-shard ownership, the JWKS union,
   `?shard=` routing, the guard, search across shards, the scaffolder,
-  TechDocs generation, and both local plugins (posting and listing notices in
-  `core`; scoring one entity and the whole catalog in `backend-scorecards`).
+  TechDocs generation, both local plugins (posting and listing notices in
+  `core`; scoring one entity and the whole catalog in `backend-scorecards`),
+  and CI access (3.6): a CI token reads every shard, and is refused for a
+  catalog write (403), by another plugin (403), for another audience (401)
+  and with a forged signature (401).
 - `task e2e`: 7 Playwright tests in a real browser, including that the
   catalog table lists components from two shards in one sorted list, that a
   team page shows ownership from another shard, and that the local plugins
@@ -966,6 +1005,8 @@ or `major`, for `release:changed`).
 ### 11.3 Hardening
 
 - A real sign-in provider (OIDC, GitHub, ...) and a permission policy.
+- CI access (3.6) from the CI platform's real issuer, with the repository
+  checked too unless the issuer is the organisation's own.
 - TechDocs with the `external` builder and S3 or GCS publishing.
 - TLS at the edge; remove the `X-Upstream-Addr` debug header; rate limits.
 - Database servers sized per workload: the catalog shards and the

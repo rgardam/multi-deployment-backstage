@@ -1,0 +1,33 @@
+# CI access: lets CI jobs read the catalog with the short-lived OIDC token
+# their CI platform issues them, instead of a stored secret. Mounted into
+# every backend, because each one verifies tokens itself, against the
+# issuer's public keys (JWKS), fetched and cached on first use.
+#
+# The issuer comes from the environment (docker-compose.yml):
+#   local          the stand-in ci-oidc service (default)
+#   GitHub Actions CI_OIDC_ISSUER=https://token.actions.githubusercontent.com
+#                  CI_OIDC_JWKS_URL=https://token.actions.githubusercontent.com/.well-known/jwks
+#
+# Backstage checks the signature, issuer, audience and expiry, nothing else:
+# with GitHub's shared issuer, a workflow in ANY repository can get a token
+# that passes, so keep such a Backstage unreachable from GitHub-hosted
+# runners, or check the repository too (README, "CI access").
+backend:
+  auth:
+    externalAccess:
+      - type: jwks
+        options:
+          url: ${CI_OIDC_JWKS_URL}
+          issuer: ${CI_OIDC_ISSUER}
+          audience: ${CI_OIDC_AUDIENCE}
+          algorithm: RS256
+          # The caller is named external:ci:<the token's sub claim>, e.g.
+          # external:ci:repo:rgardam/rgardam:ref:refs/heads/main
+          subjectPrefix: ci
+        # Only the catalog accepts these tokens, and only to read: other
+        # plugins and catalog writes answer 403. The permission policy is not
+        # consulted for these callers; this list is their whole permission.
+        accessRestrictions:
+          - plugin: catalog
+            permissionAttribute:
+              action: read
