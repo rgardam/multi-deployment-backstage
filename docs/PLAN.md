@@ -520,10 +520,12 @@ turns out to have nothing, but never skips one that could have results.
 | `GET /.backstage/auth/v1/jwks.json`                                        | Union of every shard's keys (6.6)                                                              |
 | Anything else (OpenAPI spec, analyze-location, actions)                    | Catch-all shard                                                                                |
 
-Every response carries `x-catalog-route` (`single`, `fanout` or `pinned`) and
-`x-catalog-shards`, and the gateway logs both. Watching the catalog UI shows
-the pruning working: `facet=spec.type&filter=kind=component` touches two
-shards, a group page's lookups touch only `org`.
+Every response from the router carries `x-catalog-route` (`single`, `fanout`,
+`pinned`, or `default` for the catch-all row) and `x-catalog-shards`, and the
+gateway logs both; requests the gateway sends straight to a shard (`?shard=`)
+carry neither. Watching the catalog UI shows the pruning working:
+`facet=spec.type&filter=kind=component` touches two shards, a group page's
+lookups touch only `org`.
 
 ### 6.5 Pagination across shards
 
