@@ -203,6 +203,9 @@ Other choices that keep builds small:
   and the other backends carry no Python.
 - **One parallel command**: `task build` runs all bundles and image builds
   concurrently; each image is also a target of its own (`task image:<svc>`).
+- **pnpm-like Yarn settings** (4.4): dependencies' install scripts only run
+  when allowlisted, and host installs hardlink files from one store per
+  machine instead of copying them.
 - **Stable digests**: images are built with `--provenance=false`. With
   BuildKit's default provenance attestation, every build produced a new image
   digest even when every layer came from the cache, so every service looked
@@ -290,6 +293,48 @@ Where the time goes:
   runner sees the same.
 - **In parallel**, the nine cold builds take 2 m 12 s instead of the 6.5 min
   they add up to; TechDocs is the long pole.
+
+### 4.4 Yarn, configured like pnpm
+
+pnpm was evaluated as a replacement for Yarn. Built with pnpm, the backend
+images ran the whole stack correctly, and pnpm installed dependencies about
+twice as fast. But compressing and storing the `node_modules` layer, which
+takes as long as the install, did not change, so an image rebuilt after a
+dependency change was only about 11% faster, and code-change rebuilds do not
+install at all. The Backstage tooling assumes Yarn: the CLI finds the
+repository root through Yarn's `workspaces` field, backend bundles copy
+`yarn.lock`, and `backstage-cli versions:bump`, the upgrade path, reads
+`yarn.lock` and runs Yarn. A pnpm monorepo needed five workarounds and lost
+`versions:bump`.
+
+So the repository keeps Yarn, with the two pnpm behaviours that mattered:
+
+- **Dependencies' install scripts do not run** unless allowlisted, as in
+  pnpm 10: `enableScripts: false` in `.yarnrc.yml`, and `dependenciesMeta` in
+  the root `package.json` (`better-sqlite3`, which the backend tests need).
+  The 16 scripts that no longer run were a telemetry ping, install
+  banners, checks for platform binaries that are installed anyway, and
+  optional native builds. Type checks, unit tests, lint, bundles, the smoke
+  and browser tests all pass without them, as the stack did with pnpm images
+  that skipped the same scripts. Images use the same allowlist: the pruned
+  root manifest they install from carries `dependenciesMeta`.
+- **Host installs hardlink files from one store per machine**
+  (`nmMode: hardlinks-global`), like pnpm's store, instead of copying about
+  2 GB into `node_modules`. Images copy (`YARN_NM_MODE=classic`): a hardlink
+  cannot point from an image layer into the build cache.
+
+Measured on the machine from 4.3, whole-repository installs from an empty
+`node_modules` with a warm package cache:
+
+| Configuration                                          | Install     |
+| ------------------------------------------------------ | ----------- |
+| Yarn as it was (copies files, runs 17 install scripts) | 65 to 115 s |
+| Yarn with allowlisted scripts and hardlinks            | 29 to 30 s  |
+| pnpm, for comparison                                   | 10 to 12 s  |
+
+In images, an install after a dependency change took 13.5 s on average with
+the scripts and 11.5 s without (pnpm: 7.3 s), out of 35 to 40 s for the whole
+image build.
 
 ## 5. Scaling
 

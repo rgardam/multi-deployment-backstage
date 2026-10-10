@@ -25,6 +25,8 @@ import { root } from './workspace.mjs';
 const ROOT_FIELDS = [
   'workspaces',
   'resolutions',
+  // Which dependencies may run install scripts (.yarnrc.yml enableScripts)
+  'dependenciesMeta',
   'dependencies',
   'packageManager',
 ];

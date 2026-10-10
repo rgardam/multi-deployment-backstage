@@ -14,7 +14,9 @@ FROM node:${NODE_VERSION}-trixie-slim
 
 ENV NODE_ENV=production \
     BACKSTAGE_PACKAGE=backend-catalog \
-    YARN_GLOBAL_FOLDER=/home/node/.cache/yarn
+    YARN_GLOBAL_FOLDER=/home/node/.cache/yarn \
+    # Copy files into the layer: hardlinks cannot reach the build cache
+    YARN_NM_MODE=classic
 
 USER node
 WORKDIR /app
