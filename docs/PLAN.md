@@ -173,7 +173,7 @@ yarn install (once)  ->  per package: bundle on the host  ->  thin docker build 
    `yarn workspaces focus --all --production` (with a BuildKit cache mount for
    the download cache), then copy config and unpack the bundle.
 
-The dependency layer is the expensive one (about 40 s per backend, see 4.3)
+The dependency layer is the expensive one (25 to 40 s per backend, see 4.3)
 and it is keyed on `dist/deps/` only. Without pruning, it would be keyed on
 the shared root `yarn.lock`, and any dependency change anywhere in the
 monorepo, including a dev tool upgrade, would rerun it in every backend
@@ -223,29 +223,66 @@ The same tasks map onto CI without changes:
 
 ### 4.3 Measurements
 
-Measured on a 4 vCPU, 15 GB cloud container with Docker 29 and BuildKit. "Cold"
-means no bundles and an empty BuildKit cache, including package download
-caches; base images were already present, as they usually are on CI runners.
-These figures predate the local plugins and the ninth image; rebuilds after
-plugin changes are in 7.4.
+Measured on a 4 vCPU, 15 GB cloud container with Docker 29 (containerd image
+store) and BuildKit, building one image at a time. Each time is the host
+bundle plus the image build, the same commands `task image:<svc>` runs.
 
-| What                                                                            | Time            |
-| ------------------------------------------------------------------------------- | --------------- |
-| All 8 images from cold, in parallel (`task build`)                              | 1 m 35 s        |
-| Frontend bundle                                                                 | 13 s            |
-| Backend or router bundle                                                        | ~3 s            |
-| Backend image, dependency layer (cold, or with only the download cache warm)    | 39 to 43 s      |
-| Backend image after a code change                                               | ~3 s            |
-| Router / frontend / gateway image                                               | 4 s / 7 s / 2 s |
-| Router code change to new router serving traffic (`task deploy:catalog-router`) | 12 s            |
-| Change to config baked into every image: all 8 images rebuilt                   | 5 s             |
-| Dependency added to one backend: that image rebuilt, the rest cached            | 36 s            |
-| Stack start from images, 11 containers healthy (`task up`)                      | 16 to 24 s      |
-| Add two replicas to a deployment (`task scale`)                                 | ~6 s            |
+- **Cold**: no bundle and an empty BuildKit cache, including the yarn and pip
+  download caches. Base images were already pulled, as they usually are on CI
+  runners.
+- **Code change**: one source file of the image's package edited; the
+  dependency layer is cached.
+- **Dependency change**: the image's pruned dependency manifest changed, so
+  the dependency install reruns with a warm download cache. Image build only;
+  the bundle that produces the new manifest adds about 4 s.
+- **Nothing changed**: `task image:<svc>` with everything up to date.
 
-The dependency install dominates and is barely helped by a warm download cache
-(it is extraction and linking, not downloading). Pruning is what keeps it off
-the common path. Further options are in 10.2.
+| Image                | Cold                | Code change       | Dependency change  | Nothing changed |
+| -------------------- | ------------------- | ----------------- | ------------------ | --------------- |
+| `backend-core`       | 60 s (4.1 + 55.8)   | 7.6 s (5.1 + 2.5) | 39.7 s             | 2.1 s           |
+| `backend-catalog`    | 43 s (4.6 + 38.6)   | 7.5 s (4.9 + 2.6) | 29.0 s             | 1.5 s           |
+| `backend-scaffolder` | 45 s (3.8 + 41.2)   | 7.6 s (5.1 + 2.5) | 31.6 s             | 1.6 s           |
+| `backend-search`     | 45 s (3.7 + 41.5)   | 7.0 s (3.9 + 3.1) | 32.8 s             | 1.5 s           |
+| `backend-techdocs`   | 119 s (3.8 + 115.5) | 7.9 s (5.4 + 2.5) | 32.7 s             | 1.5 s           |
+| `backend-scorecards` | 39 s (3.9 + 34.7)   | 6.1 s (3.8 + 2.3) | 25.3 s             | 1.6 s           |
+| `catalog-router`     | 15 s (2.8 + 11.8)   | 4.1 s (2.8 + 1.3) | nothing to install | 1.5 s           |
+| `app`                | 25 s (12.4 + 12.7)  | 21 s (14.6 + 6.4) | part of the bundle | 2.1 s           |
+| `gateway`            | 4.7 s (no bundle)   | 1.4 s             | nothing to install | 1.4 s           |
+
+Times in brackets are bundle + image.
+
+For the whole stack and for operations:
+
+| What                                                                            | Time     |
+| ------------------------------------------------------------------------------- | -------- |
+| All 9 images from cold, in parallel (`task build`)                              | 2 m 12 s |
+| All 9 images, nothing changed (`task build`)                                    | ~4 s     |
+| Router code change to new router serving traffic (`task deploy:catalog-router`) | 12 s     |
+| Dependency added to one backend: that image rebuilt, the rest cached            | 36 s     |
+| Stack start from images, 12 containers healthy (`task up`)                      | ~16 s    |
+| Add two replicas to a deployment (`task scale`)                                 | ~6 s     |
+
+The router deploy, dependency and scaling rows were measured before the local
+plugins were added; nothing they depend on has changed since.
+
+Where the time goes:
+
+- **A cold backend image** (`backend-core`, 56 s) spends about 9 s preparing
+  the base image, 19 s installing dependencies, and 22 s writing the result:
+  compressing the roughly 500 MB `node_modules` layer (15 s) and unpacking it
+  into Docker's image store (8 s). A dependency change skips the base image
+  and saves about 5 s of downloads, so it costs 25 to 40 s. Pruning keeps
+  this off the common path; a code change only adds a few MB on top.
+- **TechDocs** adds about 70 s when cold, for installing MkDocs with pip.
+  That layer comes before the Node dependencies, so it reruns only when the
+  MkDocs version changes.
+- **The frontend** takes 12 to 15 s to bundle and 6 to 13 s to copy its
+  67 MB of static files into the image. The very first bundle after a
+  machine restart took 43 s (and the first backend bundle 25 s instead of
+  4 s), because `node_modules` was not in the OS file cache yet. A fresh CI
+  runner sees the same.
+- **In parallel**, the nine cold builds take 2 m 12 s instead of the 6.5 min
+  they add up to; TechDocs is the long pole.
 
 ## 5. Scaling
 
@@ -671,8 +708,10 @@ secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`.
 - The CI shape from 4.2, with immutable tags (git SHA), image digests
   promoted between environments, SBOMs and signing.
 - Smaller images: production `node_modules` is most of each backend image
-  (760 to 950 MB uncompressed); dropping source maps, unused native modules and
-  optional cloud SDKs would cut size and pull time.
+  (700 to 950 MB uncompressed); dropping source maps, unused native modules and
+  optional cloud SDKs would cut size, pull time, and the 20 s or so each
+  dependency rebuild spends compressing and unpacking that layer (4.3).
+  Faster layer compression (zstd) is worth measuring for the same reason.
 - Backstage upgrades change every backend's dependencies by design; they
   rebuild everything once, in parallel.
 - Provenance and SBOM attestations belong in CI. They make every build's
