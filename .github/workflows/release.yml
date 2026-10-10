@@ -1,0 +1,86 @@
+# Releases only the services whose inputs changed since their last release
+# (see "Releasing services independently" in docs/PLAN.md).
+#
+# - On pull requests: computes the release plan and shows it in the job
+#   summary. Nothing is built.
+# - Run by hand (Actions > Release changed services > Run workflow): builds
+#   and pushes the changed services to ghcr.io/<owner>/backstage-poc/<service>
+#   tagged with their new versions, then commits deploy/releases.json and
+#   pushes <service>@<version> tags. The branch must accept pushes from
+#   GITHUB_TOKEN.
+name: Release changed services
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: How to bump the version of each changed service
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, to explain changes against each service's last release
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # No install: the plan only reads the repository, offline
+      - id: plan
+        run: node scripts/release.mjs plan
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+
+  release:
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && needs.plan.outputs.changed != '[]'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # commit deploy/releases.json and push tags
+      packages: write # push images to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, push and record the changed services
+        env:
+          OWNER: ${{ github.repository_owner }}
+          BUMP: ${{ inputs.bump }}
+        # Image names must be lower case
+        run: task release:changed REGISTRY="ghcr.io/${OWNER,,}" BUMP="$BUMP"
+      - name: Commit the release record and tag it
+        run: |
+          released=$(node -p "require('./dist/release-plan.json').services.filter(s => s.next).map(s => s.name + '@' + s.next).join(', ')")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/releases.json
+          git commit -m "Release $released"
+          task release:tag
+          git push origin HEAD --follow-tags

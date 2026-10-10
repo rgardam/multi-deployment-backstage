@@ -23,6 +23,10 @@ picked from each request's own query parameters.
   are compiled into the one app image; one backend runs inside `backend-core`,
   the other as a deployment of its own. Editing a plugin rebuilds only the
   images that contain it.
+- **Independent releases**: every service has its own version. `task plan`
+  works out which services changed since their last release (their code,
+  their own resolved dependencies, the build toolchain, the files their image
+  copies), and `task release:changed` builds, versions and pushes only those.
 
 The full design, measurements, limitations and the path to production are in
 [docs/PLAN.md](docs/PLAN.md).
@@ -78,6 +82,9 @@ Behind a TLS-intercepting proxy, pass its CA to image builds:
 | `task deploy:backend-search`                    | Rebuild one image and roll only its containers.                |
 | `task push REGISTRY=ghcr.io/acme`               | Push every image (`push:<service>` for one).                   |
 | `task release:backend-search REGISTRY=...`      | Build and push one service.                                    |
+| `task plan`                                     | Which services changed since their last release, and why.      |
+| `task release:changed REGISTRY=...`             | Build, push and version only the services that changed.        |
+| `task up:released`                              | Run every service at its released version.                     |
 | `task scale SERVICE=catalog-default REPLICAS=3` | Scale one deployment.                                          |
 | `task logs -- catalog-router gateway`           | Follow logs.                                                   |
 | `task check`                                    | Type-check and unit tests.                                     |
@@ -136,6 +143,47 @@ deployment, copy `packages/backend-scorecards` and add a compose service and a
 gateway `location`. Details and measurements:
 [docs/PLAN.md, section 7](docs/PLAN.md#7-local-plugins).
 
+## Releasing only what changed
+
+Each service is versioned and released on its own. `deploy/releases.json`
+records every service's version and a fingerprint of the inputs it was built
+from, and `task plan` compares against it. After editing the noticeboard
+plugin and updating a dependency that only the search backend uses:
+
+```text
+$ task plan
+Release plan: 2 of 9 services need a new release
+
+  SERVICE             RELEASED  NEXT   CHANGES
+  app                 1.0.0     -      unchanged
+  backend-catalog     1.0.0     -      unchanged
+  backend-core        1.0.0     1.0.1  code: plugins/noticeboard-backend/src/router.ts
+  backend-scaffolder  1.0.0     -      unchanged
+  backend-scorecards  1.0.0     -      unchanged
+  backend-search      1.0.0     1.0.1  dependencies: @backstage/plugin-search-backend-module-pg 0.5.59 → 0.5.58
+  backend-techdocs    1.0.0     -      unchanged
+  catalog-router      1.0.0     -      unchanged
+  gateway             1.0.0     -      unchanged
+```
+
+- **What counts as a change**: the service's code and the local plugins and
+  libraries it bundles (not tests, docs or the plugin dev harness), its
+  production dependencies as resolved in the lockfile, the Backstage CLI that
+  builds it, and the files its Dockerfile copies (config, examples) plus the
+  Node.js version. A dependency bump in one backend flags only that backend.
+- **Releasing**: `task release:changed REGISTRY=ghcr.io/acme` builds and
+  pushes only the flagged services as `<service>:<next version>` (`BUMP=minor`
+  or `major` for bigger steps) and records the new versions. Commit
+  `deploy/releases.json`, then `task release:tag` tags `<service>@<version>`.
+- **Deploying**: `task up:released` runs each service at its recorded
+  version; after a release, only the released services' containers change.
+- **CI**: `.github/workflows/release.yml` shows the plan on every pull request
+  and, run by hand, releases the changed services to GHCR.
+
+The plan needs no install and no network, and takes about half a second once
+its cache is warm. Details are in
+[docs/PLAN.md, section 8](docs/PLAN.md#8-releasing-services-independently).
+
 ## Repository layout
 
 | Path                                 | Contents                                                                                                                          |
@@ -151,8 +199,9 @@ gateway `location`. Details and measurements:
 | `packages/catalog-sharding`          | Shard rules shared by the router and the guard, inlined into both at build time                                                   |
 | `plugins/`                           | Local plugins: noticeboard and scorecards, frontend and backend parts                                                             |
 | `gateway/`                           | The nginx gateway image                                                                                                           |
-| `deploy/`                            | Shard topology (`catalog-shards.json`) and per-shard catalog config                                                               |
+| `deploy/`                            | Shard topology (`catalog-shards.json`), per-shard catalog config, and the release record (`releases.json`)                        |
 | `docker/`                            | Entrypoint shared by the backend images                                                                                           |
-| `scripts/`                           | Lockfile pruning, bundle inputs for Task, and the smoke test                                                                      |
+| `scripts/`                           | Release planning, lockfile pruning, bundle inputs for Task, and the smoke test                                                    |
 | `app-config*.yaml`                   | Config shared by all backends; per-deployment config is mounted into `/app/config.d`                                              |
 | `Taskfile.yml`, `docker-compose.yml` | Orchestration                                                                                                                     |
+| `.github/workflows/release.yml`      | CI: the release plan on pull requests, releases of the changed services on demand                                                 |

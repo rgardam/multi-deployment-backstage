@@ -5,6 +5,8 @@
 #   task deploy:backend-search rebuild one image and roll only that service
 #   task up / task smoke       run the stack and check routing and sharding
 #   task push REGISTRY=...     push every image (or push:<service>)
+#   task plan                  which services changed since their last release
+#   task release:changed       build, version and push only those
 #
 # https://taskfile.dev
 version: '3'
@@ -22,6 +24,8 @@ vars:
   #   --cache-from type=registry,ref=... --cache-to type=registry,ref=...,mode=max
   DOCKER_BUILD_FLAGS: '{{.DOCKER_BUILD_FLAGS | default ""}}'
   BASE_URL: '{{.APP_BASE_URL | default "http://localhost:8080"}}'
+  # How release:changed bumps the version of each changed service
+  BUMP: '{{.BUMP | default "patch"}}'
 
 env:
   IMAGE_PREFIX: '{{.IMAGE_PREFIX}}'
@@ -51,13 +55,15 @@ tasks:
       - yarn install --immutable
 
   check:
-    desc: Type-check and run unit tests (shard rules, catalog router, shard guard, plugins)
+    desc: Type-check and run unit tests (shard rules, catalog router, shard guard, plugins, release detection)
     deps: [install]
     env:
       CI: 'true'
     cmds:
       - yarn tsc
       - yarn backstage-cli repo test
+      # Which services each kind of change flags for release
+      - node --test 'scripts/*.test.mjs'
 
   # --------------------------------------------------------------- bundles
   # Bundles are built on the host, where node_modules and build caches are
@@ -67,12 +73,13 @@ tasks:
     desc: Build the frontend bundle (packages/app/dist)
     deps: [install]
     vars:
-      # The app plus every local frontend plugin and library it bundles
+      # The app plus every local frontend plugin and library it bundles,
+      # as a glob brace group: {packages/app,plugins/...}
       DIRS:
-        sh: node scripts/workspace-deps.mjs app
+        sh: node scripts/workspace-deps.mjs --glob app
     sources:
-      - '{{"{"}}{{.DIRS}}{{"}"}}/src/**/*'
-      - '{{"{"}}{{.DIRS}}{{"}"}}/package.json'
+      - '{{.DIRS}}/src/**/*'
+      - '{{.DIRS}}/package.json'
       - packages/app/public/**/*
       - app-config.yaml
       - yarn.lock
@@ -89,13 +96,13 @@ tasks:
       # The package plus every local plugin and library that goes into its
       # bundle, so editing a plugin rebuilds exactly the bundles containing it
       DIRS:
-        sh: node scripts/workspace-deps.mjs {{index .MATCH 0}}
+        sh: node scripts/workspace-deps.mjs --glob {{index .MATCH 0}}
     label: 'bundle:{{.PKG}}'
     sources:
-      - '{{"{"}}{{.DIRS}}{{"}"}}/src/**/*'
-      - '{{"{"}}{{.DIRS}}{{"}"}}/package.json'
+      - '{{.DIRS}}/src/**/*'
+      - '{{.DIRS}}/package.json'
       # Non-code assets shipped with a package, such as database migrations
-      - '{{"{"}}{{.DIRS}}{{"}"}}/migrations/**/*'
+      - '{{.DIRS}}/migrations/**/*'
       - package.json
       - yarn.lock
       - scripts/prune-lockfile.mjs
@@ -146,6 +153,9 @@ tasks:
         --provenance=false
         --build-arg NODE_VERSION={{.NODE_VERSION}}
         {{if .EXTRA_CA_CERT}}--secret id=extra_ca,src={{.EXTRA_CA_CERT}}{{end}}
+        {{if .VERSION}}--label org.opencontainers.image.version={{.VERSION}}{{end}}
+        {{if .REVISION}}--label org.opencontainers.image.revision={{.REVISION}}{{end}}
+        {{if .FINGERPRINT}}--label io.backstage-poc.inputs={{.FINGERPRINT}}{{end}}
         {{.DOCKER_BUILD_FLAGS}}
         .
 
@@ -193,6 +203,49 @@ tasks:
     cmds:
       - task: 'image:{{.SVC}}'
       - task: 'push:{{.SVC}}'
+
+  # -------------------------------------------------------------- releases
+  # Each service has its own version. deploy/releases.json records it with a
+  # fingerprint of the inputs it was built from: its code and the local
+  # packages it bundles, its pruned production lockfile, the build toolchain,
+  # and the files its Dockerfile copies. Services whose inputs differ from
+  # their record are the only ones rebuilt and released.
+
+  plan:
+    desc: Show which services changed since their last release, why, and their next versions
+    aliases: [changed]
+    env: &release-env
+      BUMP: '{{.BUMP}}'
+      NODE_VERSION: '{{.NODE_VERSION}}'
+      REGISTRY: '{{.REGISTRY}}'
+      IMAGE_NAMESPACE: '{{.IMAGE_NAMESPACE}}'
+      EXTRA_CA_CERT: '{{.EXTRA_CA_CERT}}'
+      DOCKER_BUILD_FLAGS: '{{.DOCKER_BUILD_FLAGS}}'
+    cmds:
+      - node scripts/release.mjs plan {{.CLI_ARGS}}
+
+  build:changed:
+    desc: Build images only for the services that changed, tagged with their next version
+    env: *release-env
+    cmds:
+      - node scripts/release.mjs build
+
+  release:changed:
+    desc: 'Build, push (with REGISTRY) and record new versions of the changed services only, e.g. task release:changed REGISTRY=localhost:5000 BUMP=minor'
+    env: *release-env
+    cmds:
+      - node scripts/release.mjs release
+
+  release:tag:
+    desc: Tag every recorded service version in git as <service>@<version>
+    cmds:
+      - node scripts/release.mjs tag
+
+  up:released:
+    desc: Run the stack with every service at its released version (deploy/releases.json)
+    env: *release-env
+    cmds:
+      - node scripts/release.mjs up
 
   registry:
     desc: Run a throwaway registry on localhost:5000 to try pushing

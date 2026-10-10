@@ -1,6 +1,9 @@
 # Split Backstage deployment: one gateway, one frontend, independently built
 # and scaled backends, and a catalog split into three shards behind a router.
 # Images are built by the Taskfile (`task build`); start with `task up`.
+#
+# Every image tag is TAG (default dev) unless a per-service <SERVICE>_TAG is
+# set; `task up:released` sets those to the versions in deploy/releases.json.
 
 name: backstage-poc
 
@@ -35,11 +38,11 @@ x-backend: &backend
 
 x-catalog-shard: &catalog-shard
   <<: *backend
-  image: ${IMAGE_PREFIX:-backstage-poc}/backend-catalog:${TAG:-dev}
+  image: ${IMAGE_PREFIX:-backstage-poc}/backend-catalog:${BACKEND_CATALOG_TAG:-${TAG:-dev}}
 
 services:
   gateway:
-    image: ${IMAGE_PREFIX:-backstage-poc}/gateway:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/gateway:${GATEWAY_TAG:-${TAG:-dev}}
     restart: unless-stopped
     ports:
       - ${GATEWAY_PORT:-8080}:8080
@@ -49,7 +52,7 @@ services:
       retries: 20
 
   app:
-    image: ${IMAGE_PREFIX:-backstage-poc}/app:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/app:${APP_TAG:-${TAG:-dev}}
     restart: unless-stopped
     environment:
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
@@ -61,29 +64,29 @@ services:
 
   backend-core:
     <<: *backend
-    image: ${IMAGE_PREFIX:-backstage-poc}/backend-core:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-core:${BACKEND_CORE_TAG:-${TAG:-dev}}
 
   backend-scaffolder:
     <<: *backend
-    image: ${IMAGE_PREFIX:-backstage-poc}/backend-scaffolder:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-scaffolder:${BACKEND_SCAFFOLDER_TAG:-${TAG:-dev}}
 
   backend-search:
     <<: *backend
-    image: ${IMAGE_PREFIX:-backstage-poc}/backend-search:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-search:${BACKEND_SEARCH_TAG:-${TAG:-dev}}
 
   backend-techdocs:
     <<: *backend
-    image: ${IMAGE_PREFIX:-backstage-poc}/backend-techdocs:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-techdocs:${BACKEND_TECHDOCS_TAG:-${TAG:-dev}}
 
   # A local plugin (plugins/scorecards-backend) deployed as its own service
   backend-scorecards:
     <<: *backend
-    image: ${IMAGE_PREFIX:-backstage-poc}/backend-scorecards:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/backend-scorecards:${BACKEND_SCORECARDS_TAG:-${TAG:-dev}}
 
   # Serves /api/catalog for every shard: routes on the request's own query
   # parameters and fans out (and merges) when several shards may match.
   catalog-router:
-    image: ${IMAGE_PREFIX:-backstage-poc}/catalog-router:${TAG:-dev}
+    image: ${IMAGE_PREFIX:-backstage-poc}/catalog-router:${CATALOG_ROUTER_TAG:-${TAG:-dev}}
     init: true
     restart: unless-stopped
     environment:

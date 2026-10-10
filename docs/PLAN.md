@@ -36,6 +36,12 @@ Both work, and both run end to end in this repository (Backstage 1.55):
   a deployment of its own. Each bundle is fingerprinted on the local packages
   it contains, so a plugin change rebuilds only the images that include it
   (section 7).
+- **Every service is versioned and released on its own.** Each service's
+  inputs (its code and the local packages it bundles, its resolved production
+  dependencies, the build toolchain, the files its image copies) are
+  fingerprinted and compared with the fingerprint of its last release. Only
+  services whose inputs changed are rebuilt, versioned and released, locally
+  with `task release:changed` or from CI (section 8).
 
 The catalog part answers "can we route by query?" with _yes, but not in nginx
 alone_. nginx handles explicit selection (`?shard=payments`). Routing on the
@@ -46,20 +52,21 @@ things do not cross shard boundaries, most visibly reverse relations; see
 
 ## 2. Goals and constraints
 
-| Goal                                            | How it is met                                                                                                                                  |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Independently build multiple backend containers | One package and one Dockerfile per backend; images only copy their own bundle and dependency manifest                                          |
-| A single frontend container                     | `packages/app`: the static bundle served by nginx, configured at container start                                                               |
-| nginx as the routing entry point                | `gateway/`: all browser _and_ service-to-service traffic goes through it                                                                       |
-| Fast, independent builds                        | Host-side bundles, per-backend pruned dependency layers, tiny build contexts, Task fingerprints                                                |
-| Scale backends independently                    | One Compose service (Kubernetes Deployment) per backend and per catalog shard; DNS-aware load balancing                                        |
-| Query-based routing to split catalog instances  | Gateway `?shard=` routing plus the catalog router's query-based pruning and fan-out                                                            |
-| Locally sourced plugins in both builds          | `plugins/`: frontend plugins compiled into the app bundle, backend plugins into the bundle and dependency layer of the backend that hosts them |
-| Taskfile + Docker Compose orchestration         | `Taskfile.yml`, `docker-compose.yml`                                                                                                           |
+| Goal                                            | How it is met                                                                                                                                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Independently build multiple backend containers | One package and one Dockerfile per backend; images only copy their own bundle and dependency manifest                                                                                                   |
+| A single frontend container                     | `packages/app`: the static bundle served by nginx, configured at container start                                                                                                                        |
+| nginx as the routing entry point                | `gateway/`: all browser _and_ service-to-service traffic goes through it                                                                                                                                |
+| Fast, independent builds                        | Host-side bundles, per-backend pruned dependency layers, tiny build contexts, Task fingerprints                                                                                                         |
+| Scale backends independently                    | One Compose service (Kubernetes Deployment) per backend and per catalog shard; DNS-aware load balancing                                                                                                 |
+| Query-based routing to split catalog instances  | Gateway `?shard=` routing plus the catalog router's query-based pruning and fan-out                                                                                                                     |
+| Locally sourced plugins in both builds          | `plugins/`: frontend plugins compiled into the app bundle, backend plugins into the bundle and dependency layer of the backend that hosts them                                                          |
+| Version and release services independently      | `task plan` and `task release:changed`: per-service fingerprints of code, resolved dependencies, toolchain and image inputs, compared with the release record in `deploy/releases.json`; the same in CI |
+| Taskfile + Docker Compose orchestration         | `Taskfile.yml`, `docker-compose.yml`                                                                                                                                                                    |
 
 Non-goals for the POC: production authentication (it uses the guest
 provider), a real permission policy (allow-all), Kubernetes manifests, and a
-CI pipeline. Section 10 covers those.
+CI pipeline. Section 11 covers those.
 
 ## 3. Architecture
 
@@ -207,15 +214,15 @@ Other choices that keep builds small:
   backend reads that file, so the app image leaves it out, and an unchanged
   frontend keeps its digest too.
 
-### 4.2 Proposed CI shape
+### 4.2 CI shape
 
 The same tasks map onto CI without changes:
 
 1. `task install`, `task check` (type-check and unit tests).
-2. For each service whose inputs changed (its package and the local packages
-   it bundles, as listed by `scripts/workspace-deps.mjs`, its `dist/deps`, or
-   shared config): `task release:<service> REGISTRY=... TAG=<git sha>`, as a
-   build matrix.
+2. Work out which services changed since their last release and release only
+   those: `task release:changed REGISTRY=...` (section 8).
+   `.github/workflows/release.yml` shows the plan on every pull request and
+   releases on demand.
 3. Persist BuildKit cache between runs, e.g.
    `DOCKER_BUILD_FLAGS="--cache-from type=registry,ref=<repo>:cache --cache-to type=registry,ref=<repo>:cache,mode=max"`
    (needs a buildx builder with the `docker-container` driver).
@@ -604,16 +611,17 @@ change) or `backend-plugin`, then host it as above.
 A bundle now contains more than its own package, so its Task fingerprint has
 to as well. `scripts/workspace-deps.mjs` lists, for a package, its directory
 and those of the local packages that go into its build: local runtime
-dependencies, transitively, plus inline packages (nothing declares those, so
-they count for every bundle). The bundle tasks fingerprint `src/`,
-`package.json` and `migrations/` in each.
+dependencies, transitively, plus the inline packages it imports (nothing
+declares those, so they are found by their imports). The bundle tasks
+fingerprint `src/`, `package.json` and `migrations/` in each.
 
-| Bundle               | Local inputs                                                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `app`                | `packages/app`, `plugins/noticeboard`, `plugins/scorecards`, `plugins/scorecards-common`, `packages/catalog-sharding` (inline) |
-| `backend-core`       | `packages/backend-core`, `plugins/noticeboard-backend`, `packages/catalog-sharding` (inline)                                   |
-| `backend-scorecards` | `packages/backend-scorecards`, `plugins/scorecards-backend`, `plugins/scorecards-common`, `packages/catalog-sharding` (inline) |
-| Every other bundle   | Its package and `packages/catalog-sharding` (inline)                                                                           |
+| Bundle                              | Local inputs                                                                             |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `app`                               | `packages/app`, `plugins/noticeboard`, `plugins/scorecards`, `plugins/scorecards-common` |
+| `backend-core`                      | `packages/backend-core`, `plugins/noticeboard-backend`                                   |
+| `backend-scorecards`                | `packages/backend-scorecards`, `plugins/scorecards-backend`, `plugins/scorecards-common` |
+| `backend-catalog`, `catalog-router` | Their package and `packages/catalog-sharding` (inline, imported by both)                 |
+| Every other bundle                  | Its package                                                                              |
 
 Measured with `task build` after editing one source file, with everything
 else cached, on the machine from 4.3 (wall time over two or three runs each,
@@ -639,7 +647,126 @@ fixed:
   `dist/deps`, while Task still considers the bundle current, and the image
   build then fails. The bundle task now also checks that `dist/deps` exists.
 
-## 8. Configuration reference
+## 8. Releasing services independently
+
+Every service has its own version and is released only when something that
+goes into its image changed: its code, its dependencies, the toolchain that
+builds it, or the files its Dockerfile copies. A change to one backend
+releases that backend and nothing else.
+
+### 8.1 What counts as a change
+
+`scripts/release.mjs` finds the deployable services (every
+`packages/<name>/Dockerfile`, plus the gateway) and fingerprints each from
+four inputs:
+
+| Input        | Covers                                                                                                                             | Computed from                                                                                                                                                           |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Code         | The package and every local package that goes into its build: local dependencies, transitively, and the inline packages it imports | The files, minus tests, stories, docs, the plugin dev harness and lint config; `package.json` without its dependency fields. The frontend also embeds `app-config.yaml` |
+| Dependencies | The production dependencies, as resolved                                                                                           | The lockfile pruned to them: for a backend, the file its image installs from (4.1); for the frontend, what it bundles                                                   |
+| Toolchain    | The Backstage CLI that builds every bundle                                                                                         | The lockfile pruned to the root `@backstage/cli*` devDependencies                                                                                                       |
+| Image        | What the Dockerfile copies besides the bundle                                                                                      | The Dockerfile, its `.dockerignore`, every path that file lets in (config, `examples/`, the Yarn release), and the `NODE_VERSION` build argument                        |
+
+Because the dependency input is the resolved, pruned lockfile, a dependency
+upgrade flags exactly the services whose installed dependencies change, even
+though it changes the shared root `yarn.lock`. Because the image input is read
+from each Dockerfile's `.dockerignore`, which lists exactly what may enter the
+build context, a new `COPY` cannot be missed: it needs a new line there first.
+
+What each kind of change flags (all checked by the tests in
+`scripts/release.test.mjs`):
+
+| Change                                                      | Services flagged                                            |
+| ----------------------------------------------------------- | ----------------------------------------------------------- |
+| Code in `plugins/noticeboard-backend` (or a new file there) | `backend-core`                                              |
+| Tests, a README, or a plugin's `dev/` harness               | none                                                        |
+| Code in the `scorecards` frontend plugin                    | `app`                                                       |
+| `plugins/scorecards-common`                                 | `app`, `backend-scorecards`                                 |
+| `packages/catalog-sharding` (inline)                        | `backend-catalog`, `catalog-router`                         |
+| A dependency only `backend-search` uses                     | `backend-search`                                            |
+| The Backstage CLI                                           | the eight images built from bundles, not the gateway        |
+| `app-config.yaml`                                           | `app` and the six backends                                  |
+| `app-config.production.yaml`                                | the six backends                                            |
+| `examples/`                                                 | `backend-catalog`, `backend-scaffolder`, `backend-techdocs` |
+| `gateway/default.conf.template`                             | `gateway`                                                   |
+| One service's Dockerfile                                    | that service                                                |
+| `NODE_VERSION=22`                                           | the seven Node.js images                                    |
+
+The plan needs no install and no network: pruning runs Yarn against the
+lockfile with the network off and platform-specific packages left out, so a
+fresh clone with an empty Yarn cache computes exactly the same fingerprints.
+Pruned lockfiles are cached by their inputs: a plan takes about 5 s cold and
+0.4 s after that.
+
+### 8.2 Versions and the release record
+
+`deploy/releases.json` is the release record. For each service it holds the
+version (semver), the fingerprint and the hashes of its four inputs, the build
+arguments, and the commit it was released from. The record lives in git, so
+what is released, and when it changed, is reviewable like code.
+
+When the plan flags a service it also says why: the files changed since the
+commit of its last release, the dependency versions that changed (by pruning
+the lockfile as it was at that commit, too), the build argument that changed.
+
+A release tags each image `<registry>/backstage-poc/<service>:<version>` and
+labels it with `org.opencontainers.image.version`,
+`org.opencontainers.image.revision` and `io.backstage-poc.inputs` (the
+fingerprint). `task release:tag` adds a git tag `<service>@<version>`,
+annotated with the fingerprint, for every recorded version.
+
+### 8.3 Tasks
+
+| Task                                | What it does                                                                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `task plan`                         | Which services changed since their last release, why, and their next versions. Also writes `dist/release-plan.json`                                          |
+| `task build:changed`                | Build images for the changed services only, tagged with their next version                                                                                   |
+| `task release:changed REGISTRY=...` | Build and push the changed services only, then record their new versions. Without `REGISTRY` the images stay local. `BUMP=minor` or `major` for bigger steps |
+| `task release:tag`                  | Tag recorded versions in git, once `deploy/releases.json` is committed                                                                                       |
+| `task up:released`                  | Run each service at its recorded version. Images missing locally are built from source when their source still matches the release                           |
+
+Measured on the stack in this repository, after editing a file in the
+noticeboard plugin: `task plan` flagged `backend-core` only,
+`task release:changed` built `backend-core:1.0.1` in 8.5 s (19.5 s end to
+end), and `task up:released` replaced the `backend-core` container while the
+other eleven kept running. Releasing a frontend plugin change with
+`REGISTRY=localhost:5000 BUMP=minor` built and pushed `app:1.1.0` only.
+
+A release fails as a whole: if any build or push fails, nothing is recorded.
+It also refuses to record a service whose inputs changed while it was being
+built.
+
+### 8.4 CI
+
+`.github/workflows/release.yml` runs the plan on every pull request and puts
+it in the job summary; the job needs only Node.js and a checkout. Run by hand,
+it releases the changed services to GHCR, commits `deploy/releases.json` and
+pushes the tags. To release on every merge instead, trigger it on pushes to
+the main branch; the release job already skips when nothing changed. The plan
+also writes the list of changed services to the job's outputs, for a build
+matrix with one job per service.
+
+### 8.5 Limits
+
+- Base images are referenced by tag (`node:24-trixie-slim`), so a rebuilt
+  base image is not a change. Pinning digests (and letting a bot bump them)
+  would make base image updates show up as image changes.
+- Configuration mounted at deploy time (`deploy/catalog/*.yaml`,
+  `deploy/catalog-shards.json`) belongs to the deployment, not to any image,
+  and is not versioned with the services.
+- Each release run bumps every changed service by the same step (`BUMP`).
+  Choosing per service would need conventional commits or changesets.
+- Fingerprints cover the working tree, uncommitted changes included. CI
+  releases from a clean checkout; locally, `release:changed` warns when the
+  tree is not clean.
+- Changing what a fingerprint covers changes every fingerprint, so the next
+  plan flags every service once. The fingerprint format is versioned for that.
+- Development builds (`task build`, tag `dev`) still rebuild every backend
+  bundle when the root lockfile changes, because backstage-cli copies the
+  whole lockfile into each bundle. Releases are unaffected: unchanged services
+  are not rebuilt.
+
+## 9. Configuration reference
 
 **Adding a catalog shard** (say `platform` for a `platform` namespace):
 
@@ -654,6 +781,11 @@ fixed:
 
 No image needs rebuilding.
 
+**Adding a service**: a new `packages/<name>/Dockerfile` (with its
+`.dockerignore`) is picked up by the release plan on its own and released at
+1.0.0 the first time. In `docker-compose.yml`, tag its image with
+`${<NAME>_TAG:-${TAG:-dev}}` so `task up:released` can set its version.
+
 **Environment variables** used by the backends: `APP_BASE_URL`,
 `BACKEND_BASE_URL`, `INTERNAL_GATEWAY_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`,
 `POSTGRES_USER`, `POSTGRES_PASSWORD`, `GITHUB_TOKEN` (optional),
@@ -663,17 +795,24 @@ reads `APP_BASE_URL` and `BACKEND_BASE_URL`.
 
 **Task variables**: `REGISTRY`, `IMAGE_NAMESPACE`, `TAG`, `NODE_VERSION`,
 `EXTRA_CA_CERT` (CA for TLS-intercepting proxies, passed to builds as a
-secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`.
+secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`, and `BUMP` (`patch`, `minor`
+or `major`, for `release:changed`).
 
-## 9. Testing
+## 10. Testing
 
-- `task check`: type-check plus 59 unit tests, including shard pruning, the
+- `task check`: type-check, the release detection tests below, and 59 unit
+  tests, including shard pruning, the
   guard, and router integration tests against in-process fake shards (paging
   forward and back without gaps, ordering, field projection, POST cursors,
   by-refs reassembly, JWKS union, pinning, shard outages). The plugins have
   their own: backend routers in a test backend (noticeboard on in-memory
   SQLite with its real migrations, scorecards with a mock catalog), and
   frontend pages and cards against mocked HTTP.
+- `node --test scripts/*.test.mjs` (part of `task check`, about 20 s): the
+  release plan in a temporary git worktree, with one kind of change at a time
+  (code, tests and docs, a shared library, an inline package, config, a
+  Dockerfile, a dependency, the toolchain, the Node.js version) and exactly
+  the services each must flag.
 - `task smoke`: 19 checks against the running stack, covering the gateway, the
   frontend's runtime config, guest sign-in through the org shard, pruning,
   fan-out paging, facets, by-refs, cross-shard ownership, the JWKS union,
@@ -686,9 +825,9 @@ secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`.
   show up in the sidebar, post a notice, and render the scorecard card and
   page with live data.
 
-## 10. From POC to production
+## 11. From POC to production
 
-### 10.1 Kubernetes
+### 11.1 Kubernetes
 
 - One Deployment per service, one per catalog shard from the same image.
   Mount per-deployment config as ConfigMaps into `/app/config.d`.
@@ -703,10 +842,10 @@ secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`.
 - An HPA per Deployment: catalog shards and the router on CPU and request
   rate, the scaffolder on CPU, `core` on CPU (permission checks).
 
-### 10.2 Builds and delivery
+### 11.2 Builds and delivery
 
-- The CI shape from 4.2, with immutable tags (git SHA), image digests
-  promoted between environments, SBOMs and signing.
+- The release flow from section 8, with image digests promoted between
+  environments, SBOMs and signing.
 - Smaller images: production `node_modules` is most of each backend image
   (700 to 950 MB uncompressed); dropping source maps, unused native modules and
   optional cloud SDKs would cut size, pull time, and the 20 s or so each
@@ -715,14 +854,14 @@ secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`.
 - Backstage upgrades change every backend's dependencies by design; they
   rebuild everything once, in parallel.
 - Provenance and SBOM attestations belong in CI. They make every build's
-  digest unique (4.1), so decide what to push and roll out from the build
-  inputs (Task's fingerprints, or a hash of the directories
-  `workspace-deps.mjs` lists) rather than from digests.
+  digest unique (4.1), which is fine with the release flow: what to build,
+  push and roll out is decided by input fingerprints (section 8), never by
+  digests.
 - Local plugins can stay in the repository as long as one Backstage
   installation uses them. If several do, publish them to a private registry
   and depend on versions; the images then treat them like any npm plugin.
 
-### 10.3 Hardening
+### 11.3 Hardening
 
 - A real sign-in provider (OIDC, GitHub, ...) and a permission policy.
 - TechDocs with the `external` builder and S3 or GCS publishing.
@@ -731,7 +870,7 @@ secret), `DOCKER_BUILD_FLAGS`, `APP_BASE_URL`.
 - Tracing across gateway, router and backends; the router forwards
   `traceparent`. Per-deployment dashboards and alerts.
 
-### 10.4 Catalog sharding
+### 11.4 Catalog sharding
 
 - Pick the shard key from real data and ownership: namespace per business
   unit or domain, with org data in its own shard, fits Backstage's model best.
