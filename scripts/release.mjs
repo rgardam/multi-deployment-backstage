@@ -908,6 +908,14 @@ async function upCommand() {
         : reject(new Error('docker compose up failed')),
     );
   });
+  execFileSync(
+    process.execPath,
+    [
+      join(root, 'scripts', 'wait-for-gateway.mjs'),
+      process.env.APP_BASE_URL || 'http://localhost:8080',
+    ],
+    { stdio: 'inherit' },
+  );
   console.log(
     `Running released versions: ${Object.entries(manifest)
       .map(([name, r]) => `${name}@${r.version}`)

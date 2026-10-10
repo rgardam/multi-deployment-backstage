@@ -156,6 +156,61 @@ for free:
   tag, which the frontend reads at boot and which overrides the config baked
   in at build time). The same image therefore runs in every environment.
 
+### 3.5 Databases, and giving services servers of their own
+
+Every plugin already has a database of its own (`backstage_plugin_<id>`), and
+every catalog shard is a complete catalog with its own databases (its
+`backend.database.prefix`, e.g. `backstage_shard_payments_catalog`). No plugin
+reads another plugin's database: they talk over HTTP, through the gateway.
+The things that look shared are per plugin too: each plugin keeps its own
+scheduler locks, its own service-to-service signing keys and its own
+migrations, and the event bus is reached over HTTP like any other plugin.
+
+So putting a service on a database server of its own is configuration: the
+`backend.database.connection` of that deployment (here its `POSTGRES_HOST`),
+or `backend.database.plugin.<pluginId>.connection` for one plugin inside a
+deployment. `task up DATABASES=dedicated` adds
+`docker-compose.databases.yml` and moves three deployments:
+
+| Server                | Databases                                                                    |
+| --------------------- | ---------------------------------------------------------------------------- |
+| `postgres-payments`   | the `payments` shard's catalog: the `payments` namespace                     |
+| `postgres-catalog`    | the `org` and `default` shards' catalogs                                     |
+| `postgres-scaffolder` | the scaffolder                                                               |
+| `postgres`            | everything else: auth, events, search, notifications, the local plugins, ... |
+
+With that, the stack started in about 30 s, every smoke check passed on the
+first run, and each server held exactly the databases above (the catalogs
+re-ingested their 8, 7 and 9 entities from their locations).
+
+How hard each kind of split is:
+
+| Split                                                              | Effort         | How                                                                                                                                             |
+| ------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| A deployment on its own server (scaffolder, search, core, ...)     | Low            | Its database connection; move the data with `pg_dump` / `pg_restore` while it is stopped                                                        |
+| One plugin of a deployment on its own server                       | Low            | `backend.database.plugin.<pluginId>.connection`                                                                                                 |
+| A catalog shard (a namespace, or a set of kinds) on its own server | Low            | The shard's connection. Its catalog can also rebuild from its sources; only locations registered through the API live nowhere else              |
+| One catalog's data across several servers                          | Not supported  | The catalog joins and transacts across its tables in one database. Split it into shards instead (section 6), which is what this repository does |
+| Read replicas for the catalog                                      | Medium to high | A read-only catalog deployment on a Postgres replica, and the router sending reads to it (below)                                                |
+
+The catalog, the case that looks hardest, is therefore the easy one here: the
+sharding in section 6 already split its data by namespace and kind, so each
+part can live on any server. What stays hard is scaling reads of one shard
+beyond what its primary database can serve. Backstage has the switches for a
+read-only catalog: `catalog.processingInterval: false` (no processing loop),
+`catalog.readonly: true` (no writes through the API),
+`backend.database.skipMigrations: true`, and static service-to-service keys
+(`backend.auth.pluginKeyStore`) instead of keys stored in the database. Such a
+deployment could serve a streaming replica, with the catalog router sending
+reads to it and writes to the primary. This was not built or tested here, and
+it brings replication lag: a client that registers a location and reads it
+straight back may not see it yet.
+
+The costs of more servers are operational: each one to run, patch, back up,
+monitor and size; credentials per server; and connection limits, since every
+plugin of every replica holds a pool (5 here). A connection pooler such as
+PgBouncer in front of each server helps once replicas multiply.
+
 ## 4. Fast, independent builds
 
 ### 4.1 Pipeline
@@ -911,7 +966,8 @@ or `major`, for `release:changed`).
 - A real sign-in provider (OIDC, GitHub, ...) and a permission policy.
 - TechDocs with the `external` builder and S3 or GCS publishing.
 - TLS at the edge; remove the `X-Upstream-Addr` debug header; rate limits.
-- PgBouncer (or separate database servers for the catalog shards).
+- Database servers sized per workload: the catalog shards and the
+  scaffolder on servers of their own (3.5), PgBouncer in front of each.
 - Tracing across gateway, router and backends; the router forwards
   `traceparent`. Per-deployment dashboards and alerts.
 

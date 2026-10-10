@@ -75,21 +75,22 @@ Behind a TLS-intercepting proxy, pass its CA to image builds:
 
 ## Everyday tasks
 
-| Task                                            | What it does                                                   |
-| ----------------------------------------------- | -------------------------------------------------------------- |
-| `task build`                                    | Build every image, in parallel. Unchanged bundles are skipped. |
-| `task image:backend-search`                     | Build one image (any of the nine).                             |
-| `task deploy:backend-search`                    | Rebuild one image and roll only its containers.                |
-| `task push REGISTRY=ghcr.io/acme`               | Push every image (`push:<service>` for one).                   |
-| `task release:backend-search REGISTRY=...`      | Build and push one service.                                    |
-| `task plan`                                     | Which services changed since their last release, and why.      |
-| `task release:changed REGISTRY=...`             | Build, push and version only the services that changed.        |
-| `task up:released`                              | Run every service at its released version.                     |
-| `task scale SERVICE=catalog-default REPLICAS=3` | Scale one deployment.                                          |
-| `task logs -- catalog-router gateway`           | Follow logs.                                                   |
-| `task check`                                    | Type-check and unit tests.                                     |
-| `task e2e`                                      | Browser tests against the running stack.                       |
-| `task down` / `task reset`                      | Stop (and with `reset`, delete the database).                  |
+| Task                                            | What it does                                                                |
+| ----------------------------------------------- | --------------------------------------------------------------------------- |
+| `task build`                                    | Build every image, in parallel. Unchanged bundles are skipped.              |
+| `task image:backend-search`                     | Build one image (any of the nine).                                          |
+| `task deploy:backend-search`                    | Rebuild one image and roll only its containers.                             |
+| `task push REGISTRY=ghcr.io/acme`               | Push every image (`push:<service>` for one).                                |
+| `task release:backend-search REGISTRY=...`      | Build and push one service.                                                 |
+| `task plan`                                     | Which services changed since their last release, and why.                   |
+| `task release:changed REGISTRY=...`             | Build, push and version only the services that changed.                     |
+| `task up:released`                              | Run every service at its released version.                                  |
+| `task up DATABASES=dedicated`                   | Put the catalog shards and the scaffolder on database servers of their own. |
+| `task scale SERVICE=catalog-default REPLICAS=3` | Scale one deployment.                                                       |
+| `task logs -- catalog-router gateway`           | Follow logs.                                                                |
+| `task check`                                    | Type-check and unit tests.                                                  |
+| `task e2e`                                      | Browser tests against the running stack.                                    |
+| `task down` / `task reset`                      | Stop (and with `reset`, delete the database).                               |
 
 Images are named `<REGISTRY>/backstage-poc/<service>:<TAG>`; `TAG` defaults
 to `dev`. `task registry` starts a throwaway registry on `localhost:5000` if you
@@ -142,6 +143,14 @@ plugins in `backend-core` need no routing change. To give one its own
 deployment, copy `packages/backend-scorecards` and add a compose service and a
 gateway `location`. Details and measurements:
 [docs/PLAN.md, section 7](docs/PLAN.md#7-local-plugins).
+
+## Databases
+
+Each plugin and each catalog shard already has a database of its own, so any
+service can move to a database server of its own with no code change:
+`task up DATABASES=dedicated` puts the `payments` shard, the other two shards
+and the scaffolder on three more Postgres servers
+([docs/PLAN.md, section 3.5](docs/PLAN.md#35-databases-and-giving-services-servers-of-their-own)).
 
 ## Releasing only what changed
 

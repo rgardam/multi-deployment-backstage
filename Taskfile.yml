@@ -26,11 +26,16 @@ vars:
   BASE_URL: '{{.APP_BASE_URL | default "http://localhost:8080"}}'
   # How release:changed bumps the version of each changed service
   BUMP: '{{.BUMP | default "patch"}}'
+  # shared: one Postgres server for every database. dedicated: the catalog
+  # shards and the scaffolder on servers of their own
+  # (docker-compose.databases.yml). Applies to every task that runs compose.
+  DATABASES: '{{.DATABASES | default "shared"}}'
 
 env:
   IMAGE_PREFIX: '{{.IMAGE_PREFIX}}'
   TAG: '{{.TAG}}'
   APP_BASE_URL: '{{.BASE_URL}}'
+  COMPOSE_FILE: 'docker-compose.yml{{if eq .DATABASES "dedicated"}}:docker-compose.databases.yml{{end}}'
 
 tasks:
   default:
@@ -260,6 +265,7 @@ tasks:
     desc: Start the stack and wait until every service is healthy
     cmds:
       - docker compose up --detach --wait --remove-orphans
+      - node scripts/wait-for-gateway.mjs {{.BASE_URL}}
       - echo "Backstage is up at {{.BASE_URL}}"
 
   down:
@@ -292,6 +298,7 @@ tasks:
     cmds:
       - task: 'image:{{.SVC}}'
       - docker compose up --detach --wait --no-deps {{.SERVICES}}
+      - node scripts/wait-for-gateway.mjs {{.BASE_URL}}
 
   scale:
     desc: 'Scale one service, e.g. task scale SERVICE=catalog-default REPLICAS=3'

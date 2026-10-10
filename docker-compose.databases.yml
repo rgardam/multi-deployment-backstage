@@ -1,0 +1,81 @@
+# Optional: dedicated database servers, on top of docker-compose.yml.
+# Start with `task up DATABASES=dedicated` (every task honours DATABASES), or
+# `docker compose -f docker-compose.yml -f docker-compose.databases.yml up`.
+#
+# Every plugin already has a database of its own, and every catalog shard is
+# a complete catalog with its own databases (its database prefix), so moving
+# a deployment onto a server of its own is configuration only: that
+# deployment's POSTGRES_HOST. Here:
+#
+#   postgres-payments    the payments shard, i.e. the "payments" namespace
+#   postgres-catalog     the org and default shards
+#   postgres-scaffolder  the scaffolder
+#   postgres             everything else, as before
+#
+# A deployment that moves starts with empty databases on its new server. The
+# catalog re-ingests its locations on its own; data that only lives in a
+# database (scaffolder task history, locations registered through the API)
+# needs pg_dump / pg_restore from the old server first.
+
+x-database: &database
+  image: postgres:17-alpine
+  restart: unless-stopped
+  environment:
+    POSTGRES_USER: backstage
+    POSTGRES_PASSWORD: backstage
+    # Byte-order collation, so shards sort strings exactly like the router
+    POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+  command: [postgres, -c, max_connections=200]
+  healthcheck:
+    test: [CMD-SHELL, pg_isready -U backstage]
+    interval: 2s
+    retries: 30
+
+services:
+  postgres-payments:
+    <<: *database
+    volumes:
+      - postgres-payments:/var/lib/postgresql/data
+
+  postgres-catalog:
+    <<: *database
+    volumes:
+      - postgres-catalog:/var/lib/postgresql/data
+
+  postgres-scaffolder:
+    <<: *database
+    volumes:
+      - postgres-scaffolder:/var/lib/postgresql/data
+
+  catalog-payments:
+    environment:
+      POSTGRES_HOST: postgres-payments
+    depends_on:
+      postgres-payments:
+        condition: service_healthy
+
+  catalog-org:
+    environment:
+      POSTGRES_HOST: postgres-catalog
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+
+  catalog-default:
+    environment:
+      POSTGRES_HOST: postgres-catalog
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+
+  backend-scaffolder:
+    environment:
+      POSTGRES_HOST: postgres-scaffolder
+    depends_on:
+      postgres-scaffolder:
+        condition: service_healthy
+
+volumes:
+  postgres-payments:
+  postgres-catalog:
+  postgres-scaffolder:
