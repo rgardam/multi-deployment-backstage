@@ -23,6 +23,7 @@
     "@backstage/plugin-catalog-backend-module-logs": "^0.1.26",
     "@backstage/plugin-catalog-backend-module-scaffolder-entity-model": "^0.2.24",
     "@backstage/plugin-catalog-node": "^2.2.5",
+    "jose": "^5.0.0",
     "pg": "^8.11.3"
   },
   "devDependencies": {

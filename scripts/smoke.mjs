@@ -421,11 +421,31 @@ await check('a CI token cannot change the catalog (refresh: 403)', async () => {
   });
   expect(r.res.status === 403, `status ${r.res.status}: ${r.text}`);
 });
-await check('a CI token works only for the catalog (search: 403)', async () => {
+await check('only the catalog accepts CI tokens (search: 401)', async () => {
   const r = await asCi('/api/search/query?term=ledger', await ciToken());
-  expect(r.res.status === 403, `status ${r.res.status}: ${r.text}`);
-  return r.json?.error?.message;
+  expect(r.res.status === 401, `status ${r.res.status}: ${r.text}`);
 });
+// The same issuer signs for every repository, as GitHub's does
+await check(
+  "a valid token from another owner's workflow is refused (401)",
+  async () => {
+    const r = await asCi(
+      '/api/catalog/entities?limit=1',
+      await ciToken({ requestToken: 'another-owner-request-token' }),
+    );
+    expect(r.res.status === 401, `status ${r.res.status}: ${r.text}`);
+  },
+);
+await check(
+  'a token whose owner name matches but whose owner ID does not is refused (401)',
+  async () => {
+    const r = await asCi(
+      '/api/catalog/entities?limit=1',
+      await ciToken({ requestToken: 'reused-name-request-token' }),
+    );
+    expect(r.res.status === 401, `status ${r.res.status}: ${r.text}`);
+  },
+);
 await check('a CI token for another audience is rejected (401)', async () => {
   const r = await asCi(
     '/api/catalog/entities?limit=1',

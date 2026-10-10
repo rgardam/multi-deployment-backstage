@@ -1,21 +1,18 @@
 # CI access: lets CI jobs read the catalog with the short-lived OIDC token
-# their CI platform issues them, instead of a stored secret. Mounted into
-# every backend, because each one verifies tokens itself, against the
-# issuer's public keys (JWKS), fetched and cached on first use.
+# their CI platform issues them, instead of a stored secret. Mounted into the
+# catalog shards only: every other backend refuses these tokens (401).
 #
-# The issuer comes from the environment (docker-compose.yml):
+# Type jwks-claims (packages/backend-catalog/src/ciAccess.ts) is the
+# built-in jwks check (signature against the issuer's public keys, issuer,
+# audience, expiry) plus required claims. The issuer comes from the
+# environment (docker-compose.yml):
 #   local          the stand-in ci-oidc service (default)
 #   GitHub Actions CI_OIDC_ISSUER=https://token.actions.githubusercontent.com
 #                  CI_OIDC_JWKS_URL=https://token.actions.githubusercontent.com/.well-known/jwks
-#
-# Backstage checks the signature, issuer, audience and expiry, nothing else:
-# with GitHub's shared issuer, a workflow in ANY repository can get a token
-# that passes, so keep such a Backstage unreachable from GitHub-hosted
-# runners, or check the repository too (README, "CI access").
 backend:
   auth:
     externalAccess:
-      - type: jwks
+      - type: jwks-claims
         options:
           url: ${CI_OIDC_JWKS_URL}
           issuer: ${CI_OIDC_ISSUER}
@@ -24,9 +21,20 @@ backend:
           # The caller is named external:ci:<the token's sub claim>, e.g.
           # external:ci:repo:rgardam/rgardam:ref:refs/heads/main
           subjectPrefix: ci
-        # Only the catalog accepts these tokens, and only to read: other
-        # plugins and catalog writes answer 403. The permission policy is not
-        # consulted for these callers; this list is their whole permission.
+          # GitHub's issuer signs tokens for every repository on GitHub, and
+          # a workflow picks its own audience: only these claims say whose
+          # workflow is calling. Every claim listed must match, any one of
+          # its values.
+          claims:
+            # Workflows in repositories owned by rgardam, by account ID: a
+            # name can be given up and registered by someone else, an ID
+            # never changes hands
+            repository_owner_id: '857801'
+            # To allow only some repositories instead, by ID too:
+            # repository_id: ['385459467']
+        # Only to read the catalog: catalog writes answer 403. The permission
+        # policy is not consulted for these callers; this list is their
+        # whole permission.
         accessRestrictions:
           - plugin: catalog
             permissionAttribute:

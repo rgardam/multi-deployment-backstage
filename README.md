@@ -28,9 +28,9 @@ picked from each request's own query parameters.
   their own resolved dependencies, the build toolchain, the files their image
   copies), and `task release:changed` builds, versions and pushes only those.
 - **CI access without secrets**: CI jobs read the catalog with the OIDC token
-  their CI platform issues them (GitHub Actions, or a local stand-in), which
-  every backend checks against the issuer's public keys. Read-only, and for
-  the catalog only.
+  their CI platform issues them (GitHub Actions, or a local stand-in). The
+  catalog checks it against the issuer's public keys and accepts it only from
+  workflows in your own repositories. Read-only, and for the catalog only.
 
 The full design, measurements, limitations and the path to production are in
 [docs/PLAN.md](docs/PLAN.md).
@@ -160,10 +160,13 @@ and the scaffolder on three more Postgres servers
 ## CI access
 
 CI jobs read the catalog with the OIDC token their CI platform issues them,
-so no Backstage secret is stored in CI. Every backend checks those tokens
-against the issuer's public keys (`backend.auth.externalAccess`, type `jwks`,
-in [deploy/external-access.yaml](deploy/external-access.yaml)), and they work
-only for the catalog, only to read.
+so no Backstage secret is stored in CI. The catalog shards check those tokens
+([deploy/external-access.yaml](deploy/external-access.yaml)) with
+`jwks-claims`, an external access type added in
+[packages/backend-catalog/src/ciAccess.ts](packages/backend-catalog/src/ciAccess.ts):
+Backstage's own `jwks` check (signature against the issuer's public keys,
+issuer, audience, expiry) plus required claims. The tokens only read the
+catalog; every other backend refuses them.
 
 Locally, `ci-oidc`, a stand-in for GitHub's token service, plays the CI
 platform:
@@ -186,24 +189,28 @@ CI_OIDC_JWKS_URL=https://token.actions.githubusercontent.com/.well-known/jwks
 CI_OIDC_AUDIENCE=backstage-ci
 ```
 
-| Request with a CI token                          | Answer                                                          |
-| ------------------------------------------------ | --------------------------------------------------------------- |
-| Catalog reads, on any shard                      | 200                                                             |
-| Catalog writes (refresh, registering a location) | 403                                                             |
-| Any other plugin (search, scorecards, ...)       | 403, "This token's access is restricted to plugin(s) 'catalog'" |
-| A token for another audience, or forged          | 401                                                             |
+**Why the claims check**: GitHub's issuer signs tokens for every repository
+on GitHub, and a workflow picks its own audience, so a valid signature only
+proves that _some_ workflow asked. The config therefore also requires
+`repository_owner_id: '857801'`, i.e. workflows in repositories owned by
+`rgardam`: by account ID rather than name, because a name can be given up and
+registered by someone else. Set your own with `gh api users/<name> --jq .id`
+(`orgs/<name>` for an organisation), or allow single repositories with
+`repository_id` (`gh api repos/<owner>/<repo> --jq .id`). Every claim listed
+must match, and `jwks-claims` refuses to start without one.
+
+| Request with a CI token                                  | Answer |
+| -------------------------------------------------------- | ------ |
+| Catalog reads, on any shard                              | 200    |
+| Catalog writes (refresh, registering a location)         | 403    |
+| Any other backend (search, scorecards, ...)              | 401    |
+| A valid token from another owner's workflow              | 401    |
+| Owner name `rgardam`, but another account's ID           | 401    |
+| A token for another audience, or with a forged signature | 401    |
 
 Backstage names the caller `external:ci:<the token's sub claim>` in its audit
-log, e.g. `external:ci:repo:rgardam/rgardam:ref:refs/heads/main`.
-
-**Before trusting GitHub's issuer**: Backstage checks a token's signature,
-issuer, audience and expiry, but not which repository it came from, and any
-workflow in any repository can get a GitHub token for any audience. So keep
-such a deployment out of reach of GitHub-hosted runners (call it from
-self-hosted runners in its network), use your enterprise's own issuer
-(`https://token.actions.githubusercontent.com/<enterprise>`), or add a custom
-token handler that also checks `repository_owner`; Backstage takes these
-through `externalTokenHandlersServiceRef`.
+log, e.g. `external:ci:repo:rgardam/rgardam:ref:refs/heads/main`, and each
+shard logs every token it refuses with the claim that failed.
 
 ## Releasing only what changed
 
@@ -252,7 +259,7 @@ its cache is warm. Details are in
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/app`                       | Frontend, plus its nginx image and runtime-config entrypoint                                                                      |
 | `packages/backend-core`              | auth, permission, events, proxy, notifications, signals, user settings, kubernetes, MCP actions, and the local noticeboard plugin |
-| `packages/backend-catalog`           | The catalog, plus the shard guard module. One image, one deployment per shard                                                     |
+| `packages/backend-catalog`           | The catalog, plus the shard guard and the CI token check (`jwks-claims`). One image, one deployment per shard                     |
 | `packages/backend-scaffolder`        | Software templates                                                                                                                |
 | `packages/backend-search`            | Search API, Postgres engine, catalog and TechDocs collators                                                                       |
 | `packages/backend-techdocs`          | TechDocs, in the one image that carries Python and MkDocs                                                                         |

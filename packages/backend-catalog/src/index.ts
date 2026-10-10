@@ -4,6 +4,7 @@
  * (`catalogSharding.self` plus its own `catalog.locations`).
  */
 import { createBackend } from '@backstage/backend-defaults';
+import { jwksClaimsTokenHandler } from './ciAccess';
 import { catalogModuleShardGuard } from './shardGuard';
 
 const backend = createBackend();
@@ -14,5 +15,7 @@ backend.add(
 );
 backend.add(import('@backstage/plugin-catalog-backend-module-logs'));
 backend.add(catalogModuleShardGuard);
+// CI access: OIDC tokens from allowed repositories only (ciAccess.ts)
+backend.add(jwksClaimsTokenHandler);
 
 backend.start();

@@ -1,0 +1,20 @@
+{
+  "local-ci-request-token": {
+    "repository": "rgardam/rgardam",
+    "repository_id": "385459467",
+    "repository_owner_id": "857801",
+    "ref": "refs/heads/main"
+  },
+  "another-owner-request-token": {
+    "repository": "someone-else/their-repository",
+    "repository_id": "1000001",
+    "repository_owner_id": "1000000",
+    "ref": "refs/heads/main"
+  },
+  "reused-name-request-token": {
+    "repository": "rgardam/rgardam",
+    "repository_id": "2000001",
+    "repository_owner_id": "2000000",
+    "ref": "refs/heads/main"
+  }
+}

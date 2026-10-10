@@ -11,18 +11,18 @@
     "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "backend-catalog": {
-    "version": "1.0.1",
-    "fingerprint": "bb54fee223e83ed5",
+    "version": "1.0.2",
+    "fingerprint": "39d0fe795839a94d",
     "inputs": {
-      "source": "457286affc6207e6",
-      "dependencies": "683884f3157fa5d1",
+      "source": "30218e61ec931ef4",
+      "dependencies": "32458f08e0dace4c",
       "toolchain": "245bacd7f34cbf64",
       "image": "9deacbad52e4af4c"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
+    "commit": "1b5eee8c3aee113453e7020ebb416fa3c3215ede"
   },
   "backend-core": {
     "version": "1.0.1",

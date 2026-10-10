@@ -13,12 +13,11 @@ export const DEFAULT_AUDIENCE = 'backstage-ci';
 
 export async function ciToken({
   audience = process.env.BACKSTAGE_AUDIENCE || DEFAULT_AUDIENCE,
+  // The job's own, unless a test plays another job
+  requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
 } = {}) {
-  const {
-    ACTIONS_ID_TOKEN_REQUEST_URL: requestUrl,
-    ACTIONS_ID_TOKEN_REQUEST_TOKEN: requestToken,
-    BACKSTAGE_TOKEN: token,
-  } = process.env;
+  const { ACTIONS_ID_TOKEN_REQUEST_URL: requestUrl, BACKSTAGE_TOKEN: token } =
+    process.env;
 
   if (requestUrl && requestToken) {
     const url = new URL(requestUrl);

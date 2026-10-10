@@ -6,14 +6,15 @@
  * tokens against the public keys published here. In GitHub Actions, GitHub
  * plays this part (https://token.actions.githubusercontent.com).
  *
- *   GET /token?audience=<aud>   Authorization: bearer <REQUEST_TOKEN>
+ *   GET /token?audience=<aud>   Authorization: bearer <request token>
  *       -> {"value": "<JWT>"}, like ACTIONS_ID_TOKEN_REQUEST_URL in a job
  *   GET /.well-known/jwks       the public keys
  *   GET /.well-known/openid-configuration
  *
- * The tokens describe one fixed CI job (REPOSITORY, REF), as GitHub's
- * describe the job that asked: the caller only picks the audience.
- * Zero dependencies; the signing key is kept in KEY_FILE across restarts.
+ * Like GitHub's, one issuer signs for many repositories: each request token
+ * in JOBS_FILE stands for a job in one repository, and the token says which
+ * (repository, owner and their IDs, ref). The caller only picks the
+ * audience. Zero dependencies; the signing key is kept in KEY_FILE.
  */
 import {
   createHash,
@@ -28,14 +29,11 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 
 const issuer = process.env.ISSUER ?? 'http://ci-oidc:8080';
-const requestToken = process.env.REQUEST_TOKEN;
-const repository = process.env.REPOSITORY ?? 'rgardam/rgardam';
-const ref = process.env.REF ?? 'refs/heads/main';
+const jobs = Object.entries(
+  JSON.parse(readFileSync(process.env.JOBS_FILE ?? '/srv/jobs.json', 'utf8')),
+);
 const ttlSeconds = Number(process.env.TOKEN_TTL_SECONDS ?? 300);
 const keyFile = process.env.KEY_FILE ?? '/home/node/signing-key.pem';
-if (!requestToken) {
-  throw new Error('REQUEST_TOKEN is not set');
-}
 
 function loadKey() {
   if (existsSync(keyFile)) {
@@ -52,22 +50,24 @@ const privateKey = loadKey();
 const publicJwk = createPublicKey(privateKey).export({ format: 'jwk' });
 const kid = createHash('sha256').update(publicJwk.n).digest('base64url');
 const jwks = { keys: [{ ...publicJwk, kid, alg: 'RS256', use: 'sig' }] };
-const owner = repository.split('/')[0];
 
 const encode = value =>
   Buffer.from(JSON.stringify(value)).toString('base64url');
 
-function issueToken(audience) {
+function issueToken(job, audience) {
   const now = Math.floor(Date.now() / 1000);
   const header = encode({ alg: 'RS256', typ: 'JWT', kid });
   const payload = encode({
     iss: issuer,
     aud: audience,
-    // The same claims GitHub puts in a job's token, for a push to REF
-    sub: `repo:${repository}:ref:${ref}`,
-    repository,
-    repository_owner: owner,
-    ref,
+    // The claims GitHub puts in the token of a job run for a push to `ref`
+    sub: `repo:${job.repository}:ref:${job.ref}`,
+    repository: job.repository,
+    repository_id: job.repository_id,
+    repository_owner: job.repository.split('/')[0],
+    repository_owner_id: job.repository_owner_id,
+    ref: job.ref,
+    ref_type: 'branch',
     jti: randomUUID(),
     iat: now,
     nbf: now,
@@ -81,15 +81,18 @@ function issueToken(audience) {
   return `${header}.${payload}.${signature}`;
 }
 
-function isAuthorized(header = '') {
+/** The job whose request token the caller presents */
+function jobFor(header = '') {
   const [scheme, value = ''] = header.split(' ');
+  if (scheme.toLowerCase() !== 'bearer') {
+    return undefined;
+  }
   const given = Buffer.from(value);
-  const expected = Buffer.from(requestToken);
-  return (
-    scheme.toLowerCase() === 'bearer' &&
-    given.length === expected.length &&
-    timingSafeEqual(given, expected)
-  );
+  const match = jobs.find(([requestToken]) => {
+    const expected = Buffer.from(requestToken);
+    return given.length === expected.length && timingSafeEqual(given, expected);
+  });
+  return match?.[1];
 }
 
 function send(res, status, body) {
@@ -119,21 +122,27 @@ createServer((req, res) => {
         id_token_signing_alg_values_supported: ['RS256'],
       });
       return;
-    case '/token':
-      if (!isAuthorized(req.headers.authorization)) {
-        send(res, 401, { error: 'Missing or wrong request token' });
+    case '/token': {
+      const job = jobFor(req.headers.authorization);
+      if (!job) {
+        send(res, 401, { error: 'Missing or unknown request token' });
         return;
       }
+      const owner = job.repository.split('/')[0];
       send(res, 200, {
         // GitHub's default audience, when the job does not ask for one
         value: issueToken(
+          job,
           url.searchParams.get('audience') || `https://github.com/${owner}`,
         ),
       });
       return;
+    }
     default:
       send(res, 404, { error: 'Not found' });
   }
 }).listen(8080, () => {
-  console.log(`ci-oidc: issuer ${issuer}, signing key ${kid}`);
+  console.log(
+    `ci-oidc: issuer ${issuer}, signing key ${kid}, ${jobs.length} jobs`,
+  );
 });
