@@ -1,112 +1,112 @@
 {
   "app": {
-    "version": "1.0.0",
-    "fingerprint": "5be29e5ccf36f7a2",
+    "version": "1.0.1",
+    "fingerprint": "18f3b896f34bfb96",
     "inputs": {
       "source": "fb57acef19b8e097",
-      "dependencies": "2645350c813964c3",
+      "dependencies": "02fe03251552f6e2",
       "toolchain": "245bacd7f34cbf64",
       "image": "e6fc9a1b013f29c3"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "backend-catalog": {
-    "version": "1.0.0",
-    "fingerprint": "6cf038f9bde2d0fd",
+    "version": "1.0.1",
+    "fingerprint": "bb54fee223e83ed5",
     "inputs": {
       "source": "457286affc6207e6",
-      "dependencies": "05814ea60ea25e7b",
+      "dependencies": "683884f3157fa5d1",
       "toolchain": "245bacd7f34cbf64",
-      "image": "b9cae807754110b3"
+      "image": "9deacbad52e4af4c"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "backend-core": {
-    "version": "1.0.0",
-    "fingerprint": "e63166f5ceab15d8",
+    "version": "1.0.1",
+    "fingerprint": "fb7a9d6e0a189fcf",
     "inputs": {
       "source": "3d391f3ffbb13265",
-      "dependencies": "210aaf15be2a500f",
+      "dependencies": "e30b34785f4e6344",
       "toolchain": "245bacd7f34cbf64",
-      "image": "e4c3af14212ef834"
+      "image": "6085c65fc078b67a"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "backend-scaffolder": {
-    "version": "1.0.0",
-    "fingerprint": "1b3dc82a9598f704",
+    "version": "1.0.1",
+    "fingerprint": "fd65fbbcf2e417a9",
     "inputs": {
       "source": "fd56c7d0aed40056",
-      "dependencies": "e9ac0c42dfc66fc4",
+      "dependencies": "b8055f004c92838e",
       "toolchain": "245bacd7f34cbf64",
-      "image": "bc60f25cfbcb0787"
+      "image": "fb8e88afc0390b2d"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "backend-scorecards": {
-    "version": "1.0.0",
-    "fingerprint": "aeb3cfd043466bd0",
+    "version": "1.0.1",
+    "fingerprint": "c7458b22f08738c7",
     "inputs": {
       "source": "ea403bff75a33812",
-      "dependencies": "8b204fd1bbcde66b",
+      "dependencies": "2bdd74a2d5b73ce2",
       "toolchain": "245bacd7f34cbf64",
-      "image": "5bdb3df4eb41bdc9"
+      "image": "653d1efe1c7cf6a0"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "backend-search": {
-    "version": "1.0.0",
-    "fingerprint": "b05bca400c3169ac",
+    "version": "1.0.1",
+    "fingerprint": "bd13d834c39eb505",
     "inputs": {
       "source": "db50ac4e6d28ab7b",
-      "dependencies": "e63030eb84836b09",
+      "dependencies": "35d0bbbdfb2804d5",
       "toolchain": "245bacd7f34cbf64",
-      "image": "da66745181fba520"
+      "image": "7caaaa5d7165a7d8"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "backend-techdocs": {
-    "version": "1.0.0",
-    "fingerprint": "f0e5d1ac38dbed77",
+    "version": "1.0.1",
+    "fingerprint": "efdbf4f1dc8832a0",
     "inputs": {
       "source": "762549865b93bf7d",
-      "dependencies": "586de20475b0a47d",
+      "dependencies": "621ec94d6a7bad6f",
       "toolchain": "245bacd7f34cbf64",
-      "image": "a2eae94958991117"
+      "image": "323019a8eeb0f5c9"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "catalog-router": {
-    "version": "1.0.0",
-    "fingerprint": "34c1a731afb46638",
+    "version": "1.0.1",
+    "fingerprint": "8dfa5f2071b1d236",
     "inputs": {
       "source": "684505cbe621801f",
-      "dependencies": "26b7cf6ed09df26e",
+      "dependencies": "07dca3582fad3212",
       "toolchain": "245bacd7f34cbf64",
       "image": "542d7901e1d06c0a"
     },
     "buildArgs": {
       "NODE_VERSION": "24"
     },
-    "commit": "31b7dc2f0ee571caf2b00a7d3ace56ad658063b3"
+    "commit": "ac8becdb330ec15edde981353ffb75a1e07a4683"
   },
   "gateway": {
     "version": "1.0.0",
