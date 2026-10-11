@@ -135,6 +135,11 @@ export async function prune({ rootManifest, manifests, lockfile }) {
           ...process.env,
           YARN_ENABLE_IMMUTABLE_INSTALLS: 'false',
           YARN_ENABLE_NETWORK: 'false',
+          // Yarn checks a lockfile against the registry in pull requests on
+          // public GitHub repositories (hardened mode), which needs the
+          // network. Nothing is installed or fetched here: the result is only
+          // fingerprinted, so a tampered lockfile still shows as a change.
+          YARN_ENABLE_HARDENED_MODE: 'false',
           YARN_ENABLE_TELEMETRY: 'false',
           YARN_ENABLE_PROGRESS_BARS: 'false',
         },
