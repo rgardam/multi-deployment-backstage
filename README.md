@@ -32,8 +32,10 @@ picked from each request's own query parameters.
   catalog checks it against the issuer's public keys and accepts it only from
   workflows in your own repositories. Read-only, and for the catalog only.
 
-The full design, measurements, limitations and the path to production are in
-[docs/PLAN.md](docs/PLAN.md).
+[docs/GUIDE.md](docs/GUIDE.md) walks through how it all works, with diagrams
+of every flow: ingress, auth, catalog sharding, databases, and how changes
+are detected and released. The full design, measurements, limitations and
+the path to production are in [docs/PLAN.md](docs/PLAN.md).
 
 ```mermaid
 flowchart LR
