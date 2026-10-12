@@ -19,7 +19,7 @@ backend:
           audience: ${CI_OIDC_AUDIENCE}
           algorithm: RS256
           # The caller is named external:ci:<the token's sub claim>, e.g.
-          # external:ci:repo:rgardam/rgardam:ref:refs/heads/main
+          # external:ci:repo:rgardam/multi-deployment-backstage:ref:refs/heads/main
           subjectPrefix: ci
           # GitHub's issuer signs tokens for every repository on GitHub, and
           # a workflow picks its own audience: only these claims say whose
@@ -31,7 +31,7 @@ backend:
             # never changes hands
             repository_owner_id: '857801'
             # To allow only some repositories instead, by ID too:
-            # repository_id: ['385459467']
+            # repository_id: ['1414996906']
         # Only to read the catalog: catalog writes answer 403. The permission
         # policy is not consulted for these callers; this list is their
         # whole permission.

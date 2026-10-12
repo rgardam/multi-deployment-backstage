@@ -223,8 +223,8 @@ token checks it as the built-in `jwks` type does: its signature against the
 issuer's public keys, fetched once and cached, then issuer, audience,
 algorithm and expiry. Then it checks the claims the config requires. The
 caller becomes the service principal `external:ci:<sub>`, e.g.
-`external:ci:repo:rgardam/rgardam:ref:refs/heads/main` in GitHub's case,
-which the catalog's audit log records.
+`external:ci:repo:rgardam/multi-deployment-backstage:ref:refs/heads/main` in
+GitHub's case, which the catalog's audit log records.
 
 The claims are what makes a shared issuer safe. GitHub's signs tokens for
 every repository on GitHub, and each workflow chooses its own audience, so

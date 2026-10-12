@@ -5,7 +5,7 @@ import { AddressInfo } from 'node:net';
 import { createJwksClaimsTokenHandler } from './ciAccess';
 
 const ISSUER = 'https://token.ci.example';
-const OWN_REPO = 'repo:rgardam/rgardam:ref:refs/heads/main';
+const OWN_REPO = 'repo:rgardam/multi-deployment-backstage:ref:refs/heads/main';
 
 describe('jwks-claims external access', () => {
   const logger = mockServices.rootLogger.mock();
@@ -54,13 +54,13 @@ describe('jwks-claims external access', () => {
       }),
     });
 
-  /** A token like the ones GitHub Actions issues a job in rgardam/rgardam */
+  /** A token like the ones GitHub Actions issues a job in this repository */
   const tokenFor = (
     claims: Record<string, unknown> = {},
     sign: { issuer?: string; audience?: string; key?: KeyLike } = {},
   ) =>
     new SignJWT({
-      repository: 'rgardam/rgardam',
+      repository: 'rgardam/multi-deployment-backstage',
       repository_owner: 'rgardam',
       repository_owner_id: '857801',
       ...claims,
@@ -112,7 +112,7 @@ describe('jwks-claims external access', () => {
     const context = contextFor({
       claims: {
         repository_owner_id: [857801, '123'],
-        repository: ['rgardam/rgardam', 'rgardam/other'],
+        repository: ['rgardam/multi-deployment-backstage', 'rgardam/other'],
       },
     });
     await expect(

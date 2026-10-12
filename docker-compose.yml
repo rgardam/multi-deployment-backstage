@@ -149,7 +149,7 @@ services:
     command: [node, /srv/server.mjs]
     environment:
       ISSUER: http://ci-oidc:8080
-      # One request token per CI job: a job in rgardam/rgardam, and two in
+      # One request token per CI job: a job in this repository, and two in
       # repositories Backstage must refuse
       JOBS_FILE: /srv/jobs.json
     volumes:

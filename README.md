@@ -211,8 +211,9 @@ must match, and `jwks-claims` refuses to start without one.
 | A token for another audience, or with a forged signature | 401    |
 
 Backstage names the caller `external:ci:<the token's sub claim>` in its audit
-log, e.g. `external:ci:repo:rgardam/rgardam:ref:refs/heads/main`, and each
-shard logs every token it refuses with the claim that failed.
+log, e.g.
+`external:ci:repo:rgardam/multi-deployment-backstage:ref:refs/heads/main`, and
+each shard logs every token it refuses with the claim that failed.
 
 ## Releasing only what changed
 
