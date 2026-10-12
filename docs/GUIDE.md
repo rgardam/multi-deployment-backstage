@@ -59,8 +59,9 @@ used by [CI access](#ci-access).
 
 ## Ingress: how a request finds its backend
 
-Every request enters through the gateway, which routes on the path alone. It
-checks no credentials: each backend checks every token itself.
+Every request enters through the gateway, which routes on the path, and
+catalog requests also on `?shard=` or an `X-Catalog-Shard` header. It checks
+no credentials: each backend checks every token itself.
 
 ```mermaid
 flowchart TD
@@ -77,9 +78,9 @@ flowchart TD
 Backends call each other through the same gateway. Their discovery config
 resolves every plugin, their own included, to
 `http://gateway:8080/api/<pluginId>`, so the gateway's routes are the only
-place that knows which deployment hosts which plugin. Moving a plugin to
-another deployment is a gateway change. Here, search reads the catalog to index
-it:
+place that knows which deployment hosts which plugin: moving a plugin to
+another deployment changes its `backend.add` and one gateway route, and no
+other backend. Here, search reads the catalog to index it:
 
 ```mermaid
 sequenceDiagram
@@ -87,7 +88,7 @@ sequenceDiagram
   participant G as gateway
   participant R as catalog-router
   participant P as catalog shards
-  S->>G: GET /api/catalog/entities?... (discovery points at the gateway)
+  S->>G: GET /api/catalog/entities/by-query?... (discovery points at the gateway)
   G->>R: /api/catalog goes to the router
   R->>P: only the shards that may hold an answer
   P-->>R: their pages
@@ -97,14 +98,16 @@ sequenceDiagram
 The gateway resolves service names again every 5 seconds, so new replicas get
 traffic without a restart. Right after a container is replaced it can still
 hold the old address for those seconds, so `task up` and `task deploy:*` wait
-until the gateway reaches every deployment
+until every gateway route answers
 ([scripts/wait-for-gateway.mjs](../scripts/wait-for-gateway.mjs)).
 
 ## Auth
 
 Nothing is shared between deployments: no secret, no session store. Every
 token is a signed JWT, and a backend checks it against the issuer's public
-keys, which it fetches through the gateway and caches.
+keys: Backstage's own through the gateway, a CI platform's from the platform.
+It caches them for 10 minutes, and fetches them again early for a key it has
+not seen.
 
 | Token                      | Issued by                        | Checked against                              |
 | -------------------------- | -------------------------------- | -------------------------------------------- |
@@ -121,7 +124,7 @@ sequenceDiagram
   participant G as gateway
   participant A as auth (backend-core)
   participant C as catalog (router, org shard)
-  U->>G: POST /api/auth/guest/refresh
+  U->>G: GET /api/auth/guest/refresh
   G->>A: /api/auth goes to backend-core
   A->>C: look up user:default/guest, with auth's own plugin token
   C-->>A: the user entity, with its memberOf groups
@@ -151,12 +154,12 @@ sequenceDiagram
   participant S as catalog shard
   U->>G: GET /api/scorecards/..., Bearer user token
   G->>SC: /api/scorecards goes to backend-scorecards
-  SC->>G: auth's public keys (first time only, then cached)
+  SC->>G: auth's public keys (cached)
   SC->>SC: check the user token
   SC->>G: GET /api/catalog/..., Bearer plugin token (scorecards to catalog, for the user)
   G->>R: /api/catalog goes to the router
   R->>S: the same request, token unchanged
-  S->>G: scorecards' public keys (first time only)
+  S->>G: scorecards' and auth's public keys (cached)
   S->>S: check the plugin token and the user token inside it
   S-->>R: entities
   R-->>SC: entities
@@ -169,10 +172,11 @@ shard it asks, and each shard checks it. A request without a valid token gets
 
 ### The catalog's keys: three shards, one key set
 
-Each plugin keeps its signing keys in its own database and replaces them
-hourly. Replicas of one deployment share its database, so each publishes all
-of their keys. The three catalog shards all sign as plugin `catalog`, but each
-has its own database and keys, while a verifier fetches "the catalog's" keys
+Each replica of a plugin signs with a key pair it keeps in memory and replaces
+hourly, and stores the public keys in the plugin's database for three hours.
+Replicas of one deployment share that database, so each publishes all of
+their public keys. The three catalog shards all sign as plugin `catalog`, but
+each has its own database, while a verifier fetches "the catalog's" keys
 from one address, `/api/catalog/.backstage/auth/v1/jwks.json`, which lands on
 the router. So the router answers it with all three shards' public keys.
 
@@ -191,8 +195,9 @@ the verifier's key request reached another shard.
 
 The permission framework is on. On every catalog read for a user, the shard
 asks the permission plugin in backend-core whether the user may read; the
-policy here allows everything. Service callers, plugins and CI, are not put
-to the policy: Backstage decides from their access restrictions alone.
+policy here allows everything. A plugin calling on a user's behalf is checked
+as that user. Plugins calling as themselves, and CI, are not put to the
+policy: Backstage decides from their access restrictions alone.
 
 ### CI access
 
@@ -215,7 +220,7 @@ sequenceDiagram
   I-->>J: signed JWT: iss, aud, sub, repository_owner_id, ...
   J->>G: GET /api/catalog/entities/by-query, Bearer JWT
   G->>S: forwarded unchanged, to each shard asked
-  S->>I: the issuer's public keys (first time only, then cached)
+  S->>I: the issuer's public keys (cached)
   S->>S: signature, issuer, audience, expiry, then repository_owner_id
   alt owner allowed, and a read
     S-->>J: 200, the entities
@@ -282,7 +287,8 @@ flowchart TD
 | any request with `?shard=payments`                     | payments          | Named explicitly: the gateway sends it straight there             |
 
 Responses from the router carry `x-catalog-route` (`single` or `fanout` for
-queries) and `x-catalog-shards`, the shards asked; the gateway logs both.
+queries) and `x-catalog-shards` (for queries, the shards asked); the gateway
+logs both.
 Pruning is conservative: it may ask a shard that turns out to have nothing,
 but never skips one that has an answer.
 
@@ -315,8 +321,9 @@ sequenceDiagram
   R-->>C: the next 2, and a new cursor
 ```
 
-`totalItems` is the sum of the shards' totals. Pages neither skip nor repeat
-entities unless entities are added or removed between them.
+`totalItems` is the sum of the shards' totals, counted for the first page and
+carried in the cursor. Pages neither skip nor repeat entities unless entities
+are added or removed between them.
 
 ### Writes
 
@@ -340,7 +347,8 @@ sequenceDiagram
 ```
 
 A location that mixes entities owned by different shards is refused, with the
-catch-all's error naming each entity's owner.
+catch-all's error, which names the first entity it does not own and that
+entity's shard.
 
 ### Ownership across shards
 
@@ -393,8 +401,9 @@ set of namespaces, one of them taking everything else:
 Adding one takes configuration, not a new catalog image: the shard in
 `deploy/catalog-shards.json` (first matching rule wins), a config file with its
 name, database prefix, `catalog.rules` and locations, a deployment of the
-catalog image mounting both files, and a restart of the router and the shards,
-which read the topology at startup. Routing `?shard=team-a` too means a gateway
+catalog image like the other shards (mounting the topology, its config and
+`deploy/external-access.yaml`, or CI requests that reach it fail), and a
+restart of the router and the shards, which read the topology at startup. Routing `?shard=team-a` too means a gateway
 change, so a new gateway image. Details: [PLAN.md, section 9](PLAN.md#9-configuration-reference).
 
 ## Databases
@@ -402,8 +411,10 @@ change, so a new gateway image. Details: [PLAN.md, section 9](PLAN.md#9-configur
 Every plugin has a database of its own, and every catalog shard a database
 prefix of its own, so any of them can move to a dedicated server by changing
 its database address (`POSTGRES_HOST`) and copying its data across.
-`task up DATABASES=dedicated` does that for the catalog shards and the
-scaffolder ([docker-compose.databases.yml](../docker-compose.databases.yml)):
+`task up DATABASES=dedicated` points the catalog shards and the scaffolder at
+new, empty servers ([docker-compose.databases.yml](../docker-compose.databases.yml)):
+the shards read their locations again, and the scaffolder starts without task
+history.
 
 ```mermaid
 flowchart LR
@@ -443,9 +454,10 @@ flowchart LR
 
 A code change rebuilds the bundle and the top layer only, in seconds. A
 dependency bump in one backend changes only that backend's pruned lockfile, so
-every other image keeps its cache. Task skips a bundle whose sources did not
-change, and `task deploy:<service>` rebuilds one image and replaces only its
-containers.
+every other image keeps its dependency layer; their top layers are rebuilt
+anyway, since every bundle carries the whole `yarn.lock`. Task skips a bundle
+whose sources did not change, and `task deploy:<service>` rebuilds one image
+and replaces only its containers.
 
 ### Detecting which services changed
 
@@ -460,7 +472,7 @@ flowchart TD
   plan(["task plan"]) --> each["For each service"]
   each --> source["source: its package and the local packages it bundles,<br/>without tests, docs and the plugin dev harness"]
   each --> deps["dependencies: the lockfile pruned to<br/>its production dependencies"]
-  each --> tool["toolchain: the Backstage CLI<br/>that builds every bundle"]
+  each --> tool["toolchain: the Backstage CLI<br/>that builds every bundle,<br/>the Yarn version and<br/>root resolutions"]
   each --> image["image: its Dockerfile, every file its .dockerignore<br/>lets in, and NODE_VERSION"]
   source --> same{"The same fingerprint as<br/>in deploy/releases.json?"}
   deps --> same
@@ -477,15 +489,18 @@ The inputs follow what really reaches an image:
   is compiled into the app; a backend plugin goes into the bundle of the
   backend that hosts it; an inline package such as
   `packages/catalog-sharding` counts for the packages that import it.
-- **Dependencies are resolved, not declared.** Two backends declaring the
-  same range are independent: only the backend whose resolved versions or
-  checksums change is flagged. The plan names the versions that changed.
+- **Dependencies count as resolved for each service.** A bump flags exactly
+  the services whose pruned lockfile changes: a package only one backend uses
+  flags that backend, one several share flags them all. The plan names the
+  versions that changed.
 - **Config counts where it is copied.** `app-config.yaml` is compiled into the
-  frontend and copied into every backend image;
-  `app-config.production.yaml` and `examples/` only into the images whose
-  `.dockerignore` lets them in.
-- **What never reaches an image never counts**: tests, Markdown, Storybook
-  files, the plugin dev harness, and everything outside the inputs above.
+  frontend and copied into every backend image, `app-config.production.yaml`
+  into every backend image, and `examples/` only into the catalog, scaffolder
+  and TechDocs images.
+- **Left out on purpose**: tests, stories, package Markdown, lint config and
+  the plugin dev harness, which change nothing an image runs, and the full
+  `yarn.lock` inside each bundle, which the dependencies input stands for.
+  Nothing outside the inputs above counts.
 
 Each kind of change, and exactly what it flags (checked by
 [scripts/release.test.mjs](../scripts/release.test.mjs), part of
@@ -503,7 +518,7 @@ Each kind of change, and exactly what it flags (checked by
 | `gateway/default.conf.template`                                      | gateway                                               |
 | One service's `Dockerfile`                                           | that service                                          |
 | `examples/`                                                          | backend-catalog, backend-scaffolder, backend-techdocs |
-| A dependency of one backend                                          | that backend                                          |
+| A dependency only one backend uses                                   | that backend                                          |
 | The build toolchain (`@backstage/cli`)                               | app, the six backends, catalog-router                 |
 | `NODE_VERSION`                                                       | the six backends and catalog-router                   |
 
@@ -535,8 +550,8 @@ Images carry their version, commit and fingerprint as labels
 ([release.yml](../.github/workflows/release.yml)), every pull request shows
 the plan in its job summary; running the workflow by hand builds and pushes
 the changed services to GitHub's container registry, commits the record and
-pushes the tags. A release replaces only its own containers: the other
-services keep running their recorded versions.
+pushes the tags. Rolling out with `task up:released` replaces only the
+containers of the services whose version changed; the others keep running.
 
 ## In the repository
 
@@ -550,4 +565,4 @@ services keep running their recorded versions.
 | CI access config and stand-in           | [deploy/external-access.yaml](../deploy/external-access.yaml), [docker/ci-oidc](../docker/ci-oidc) |
 | Dedicated database servers              | [docker-compose.databases.yml](../docker-compose.databases.yml)                                    |
 | Change detection and the release record | [scripts/release.mjs](../scripts/release.mjs), [deploy/releases.json](../deploy/releases.json)     |
-| Smoke test of every flow above          | [scripts/smoke.mjs](../scripts/smoke.mjs) (`task smoke`)                                           |
+| Smoke test: routing, sharding, auth, CI | [scripts/smoke.mjs](../scripts/smoke.mjs) (`task smoke`)                                           |

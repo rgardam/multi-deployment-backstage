@@ -918,12 +918,14 @@ matrix with one job per service.
    `target` and a `match` rule.
 2. `deploy/catalog/platform.yaml`: `catalogSharding.self`, a database prefix,
    and its `catalog.locations` and `catalog.rules`.
-3. `docker-compose.yml`: a service from the `backend-catalog` image mounting
-   both files, like the existing shards.
-4. `gateway/default.conf.template`: an upstream and a line in each shard map,
-   for `?shard=platform`.
+3. `docker-compose.yml`: a service from the `backend-catalog` image like the
+   existing shards, mounting both files and `deploy/external-access.yaml`;
+   without that one, CI requests that reach the new shard fail.
+4. Restart the router and every shard: they read the topology at startup.
+5. Optionally, for `?shard=platform`: an upstream and a line in each shard map
+   in `gateway/default.conf.template`, which means a new gateway image.
 
-No image needs rebuilding.
+No catalog image needs rebuilding.
 
 **Adding a service**: a new `packages/<name>/Dockerfile` (with its
 `.dockerignore`) is picked up by the release plan on its own and released at

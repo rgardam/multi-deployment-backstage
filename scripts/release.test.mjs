@@ -4,7 +4,7 @@
  * one kind of change at a time and checks exactly which services the plan
  * flags. Runs offline; the working copy is never touched.
  *
- *   node --test scripts/
+ *   node --test 'scripts/*.test.mjs'
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
