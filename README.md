@@ -1,5 +1,23 @@
 # Backstage, split into independently built and scaled services
 
+## Why
+
+**One Backstage backend means one build, one release and one scaling unit for
+every plugin, and one catalog for every team. This project splits it up, so
+each part is built, released and scaled on its own, while users still see one
+Backstage.**
+
+That is fine for a small installation, and gets in the way as one grows:
+
+| With one backend                                                  | With this setup                                                                                      |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| A change to any plugin rebuilds and redeploys the whole backend   | A code change rebuilds only the images that contain it, in about 3 s each                            |
+| Every plugin ships in the same release, so every team waits on it | Each service has its own version, and only the services that changed are released                    |
+| More capacity for one plugin means more replicas of all of them   | Each service scales on its own                                                                       |
+| One catalog, in one database, holds every team's entities         | Three catalog shards each own part of the catalog, and each can move to a database server of its own |
+
+## What it is
+
 A proof of concept for running [Backstage](https://backstage.io) (1.55) as
 [multiple backends](https://backstage.io/docs/backend-system/building-backends/index#split-into-multiple-backends)
 behind one nginx gateway, with the software catalog split into shards that are
